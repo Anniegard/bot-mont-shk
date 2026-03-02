@@ -1,8 +1,10 @@
-﻿.env
+.env
 *.log
 bot_logs.txt
 uploaded_file_*.xlsx
+uploaded_*.xlsx
 *service-account*.json
 *credentials*.json
 notmovingsk-uploading-*.json
 __pycache__/
+logs/
