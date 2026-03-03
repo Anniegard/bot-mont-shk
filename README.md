@@ -1,4 +1,4 @@
-# Bot_Mont_SHK
+﻿# Bot_Mont_SHK
 
 Telegram-бот принимает два типа файлов и пишет результат на один лист Google Sheets:
 - «Без движения» (основная выгрузка)
@@ -55,7 +55,7 @@ python main.py
   - `YANDEX_MAX_MB` — лимит скачивания по OAuth (по умолчанию 200).
 
 ## Файлы данных
-- `data/block_ids.txt` — whitelist ID Блока для фильтра 24ч (по одному в строке). Шаблон: `data/block_ids.txt.example`.
+- `data/block_ids.txt` — whitelist ID Блока (по одному в строке). Шаблон: `data/block_ids.txt.example`.
 - `data/last_24h_snapshot.json`, `data/last_24h_meta.json` — snapshot 24ч (создаются на VM).
 - `data/last_no_move_map.json`, `data/last_no_move_meta.json` — карта идентификатор → ID тары из «Без движения» (создаются на VM).
 - `data/README.md` — описание содержимого папки `data/`.
@@ -82,4 +82,5 @@ python main.py
 - Фильтр 24ч по `ID Блока` использует `data/block_ids.txt`; пустой файл = без фильтра.
 - Одна обработка за раз (async lock).
 - Документы в Telegram — до 20 МБ; большие файлы — ссылка или Я.Диск.
-\nАктуальная точка входа: python main.py. Папка legacy/ содержит старую версию бота для справки.\n
+
+Актуальная точка входа: python main.py. Папка legacy/ содержит старую версию бота для справки.
