@@ -13,3 +13,5 @@ data/last_24h_meta.json
 data/*.pkl
 *_unzipped/
 data/block_ids.txt
+data/*.json
+data/*.zip

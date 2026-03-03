@@ -29,7 +29,6 @@ def _get_worksheet(client: gspread.Client, spreadsheet_id: str, worksheet_name: 
         try:
             return spreadsheet.worksheet(worksheet_name)
         except gspread.WorksheetNotFound:
-            # Фолбэк на первый лист, чтобы не падать, если имя указано неверно или лист переименован
             return spreadsheet.sheet1
     return spreadsheet.sheet1
 
@@ -47,6 +46,15 @@ def _format_meta_uploaded_at(meta: Optional[dict]) -> str:
         return str(uploaded)
 
 
+def _spaced_rows(rows: List[List], width: int) -> List[List]:
+    spaced: List[List] = []
+    for row in rows:
+        padded = list(row) + [""] * max(0, width - len(row))
+        spaced.append(padded)
+        spaced.append([""] * width)
+    return spaced
+
+
 def update_tables(
     client: gspread.Client,
     spreadsheet_id: str,
@@ -59,15 +67,18 @@ def update_tables(
 ) -> None:
     worksheet = _get_worksheet(client, spreadsheet_id, worksheet_name)
 
-    # Clear only relevant ranges (data starts at row 5)
-    left_existing = max(len(worksheet.col_values(2)) - 4, 0)  # column B
-    right_existing = max(len(worksheet.col_values(11)) - 4, 0)  # column K
+    left_values = _spaced_rows(left_rows, len(LEFT_COLUMNS)) if left_rows else []
+    right_values = _spaced_rows(right_rows, len(RIGHT_COLUMNS)) if right_rows else []
+
+    # data starts at row 4 (B4 / K4)
+    left_existing = max(len(worksheet.col_values(2)) - 3, 0)  # column B
+    right_existing = max(len(worksheet.col_values(11)) - 3, 0)  # column K
 
     clear_ranges = []
     if not skip_left and left_existing:
-        clear_ranges.append(f"B5:E{4 + left_existing}")
+        clear_ranges.append(f"B4:E{3 + left_existing}")
     if not skip_right and right_existing:
-        clear_ranges.append(f"K5:O{4 + right_existing}")
+        clear_ranges.append(f"K4:O{3 + right_existing}")
     if clear_ranges:
         worksheet.batch_clear(clear_ranges)
 
@@ -80,10 +91,10 @@ def update_tables(
         {"range": "P4", "values": [[_format_meta_uploaded_at(right_meta)]]},
     ]
 
-    if not skip_left and left_rows:
-        updates.append({"range": f"B5:E{4 + len(left_rows)}", "values": left_rows})
-    if not skip_right and right_rows:
-        updates.append({"range": f"K5:O{4 + len(right_rows)}", "values": right_rows})
+    if not skip_left and left_values:
+        updates.append({"range": f"B4:E{3 + len(left_values)}", "values": left_values})
+    if not skip_right and right_values:
+        updates.append({"range": f"K4:O{3 + len(right_values)}", "values": right_values})
 
     worksheet.batch_update(updates)
 
@@ -96,8 +107,4 @@ def update_tables(
     except Exception:
         pass
 
-    logging.info(
-        "Таблицы обновлены: без движения строк=%s, 24ч строк=%s",
-        len(left_rows),
-        len(right_rows),
-    )
+    logging.info("Таблицы обновлены: без движения строк=%s, 24ч строк=%s", len(left_rows), len(right_rows))
