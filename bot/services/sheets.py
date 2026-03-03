@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -8,6 +9,13 @@ import gspread
 from google.oauth2.service_account import Credentials
 
 SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+
+LEFT_HEADER_TITLE = "Выгрузка Идентификатор товара без движения"
+LEFT_COLUMNS = ["Гофра", "Идентификатор товара", "Кол-во", "Стоимость"]
+
+RIGHT_HEADER_TITLE = "Товар, который спишется в течение 24ч"
+RIGHT_COLUMNS = ["ID тары", "Идентификатор товара", "Кол-во", "Стоимость", "Когда начнёт списываться?"]
+META_LABEL = "Актуальность файла 24ч:"
 
 
 def authorize_client(credentials_path: Path) -> gspread.Client:
@@ -18,31 +26,78 @@ def authorize_client(credentials_path: Path) -> gspread.Client:
 def _get_worksheet(client: gspread.Client, spreadsheet_id: str, worksheet_name: Optional[str]):
     spreadsheet = client.open_by_key(spreadsheet_id)
     if worksheet_name:
-        return spreadsheet.worksheet(worksheet_name)
+        try:
+            return spreadsheet.worksheet(worksheet_name)
+        except gspread.WorksheetNotFound:
+            # Фолбэк на первый лист, чтобы не падать, если имя указано неверно или лист переименован
+            return spreadsheet.sheet1
     return spreadsheet.sheet1
 
 
-def upload_to_google_sheets(
-    rows: List[List],
+def _format_meta_uploaded_at(meta: Optional[dict]) -> str:
+    if not meta:
+        return "нет данных"
+    uploaded = meta.get("uploaded_at")
+    if not uploaded:
+        return "нет данных"
+    try:
+        dt = datetime.fromisoformat(uploaded)
+        return dt.strftime("%d.%m.%Y %H:%M")
+    except Exception:
+        return str(uploaded)
+
+
+def update_tables(
     client: gspread.Client,
     spreadsheet_id: str,
-    worksheet_name: Optional[str] = None,
+    worksheet_name: Optional[str],
+    left_rows: List[List],
+    right_rows: List[List],
+    right_meta: Optional[dict],
+    skip_left: bool = False,
+    skip_right: bool = False,
 ) -> None:
     worksheet = _get_worksheet(client, spreadsheet_id, worksheet_name)
 
-    existing_rows = len(worksheet.col_values(4))  # column D
-    rows_to_clear = max(existing_rows, len(rows), 1)
-    clear_range = f"D1:G{rows_to_clear}"
-    worksheet.batch_clear([clear_range])
+    # Clear only relevant ranges (data starts at row 5)
+    left_existing = max(len(worksheet.col_values(2)) - 4, 0)  # column B
+    right_existing = max(len(worksheet.col_values(11)) - 4, 0)  # column K
 
-    if rows:
-        update_range = f"D1:G{len(rows)}"
-        worksheet.update(update_range, rows, value_input_option="RAW")
-        logging.info(
-            "Данные успешно загружены в Google Sheets. Строк: %s. Диапазон: %s. Лист: %s",
-            len(rows),
-            update_range,
-            worksheet.title,
-        )
-    else:
-        logging.info("Данные для загрузки отсутствуют. Диапазон %s очищен.", clear_range)
+    clear_ranges = []
+    if not skip_left and left_existing:
+        clear_ranges.append(f"B5:E{4 + left_existing}")
+    if not skip_right and right_existing:
+        clear_ranges.append(f"K5:O{4 + right_existing}")
+    if clear_ranges:
+        worksheet.batch_clear(clear_ranges)
+
+    updates = [
+        {"range": "B2:E2", "values": [[LEFT_HEADER_TITLE, "", "", ""]]},
+        {"range": "B3:E3", "values": [LEFT_COLUMNS]},
+        {"range": "K2:O2", "values": [[RIGHT_HEADER_TITLE, "", "", "", ""]]},
+        {"range": "K3:O3", "values": [RIGHT_COLUMNS]},
+        {"range": "P3", "values": [[META_LABEL]]},
+        {"range": "P4", "values": [[_format_meta_uploaded_at(right_meta)]]},
+    ]
+
+    if not skip_left and left_rows:
+        updates.append({"range": f"B5:E{4 + len(left_rows)}", "values": left_rows})
+    if not skip_right and right_rows:
+        updates.append({"range": f"K5:O{4 + len(right_rows)}", "values": right_rows})
+
+    worksheet.batch_update(updates)
+
+    try:
+        worksheet.merge_cells("B2:E2")
+    except Exception:
+        pass
+    try:
+        worksheet.merge_cells("K2:O2")
+    except Exception:
+        pass
+
+    logging.info(
+        "Таблицы обновлены: без движения строк=%s, 24ч строк=%s",
+        len(left_rows),
+        len(right_rows),
+    )

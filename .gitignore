@@ -8,3 +8,8 @@ uploaded_*.xlsx
 notmovingsk-uploading-*.json
 __pycache__/
 logs/
+data/last_24h_snapshot.json
+data/last_24h_meta.json
+data/*.pkl
+*_unzipped/
+data/block_ids.txt

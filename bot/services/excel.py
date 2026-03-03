@@ -48,10 +48,22 @@ def process_file(file_path: str | Path, export_mode: str) -> Tuple[List[List], D
     elif export_mode == EXPORT_ONLY_TRANSFERS:
         grouped = grouped[transfers_mask]
 
-    formatted_rows = [
-        [row["Гофра"], row["ШК"], row["Количество ШК"], row["Стоимость"]]
-        for _, row in grouped.iterrows()
-    ]
+    product_ids_set = set()
+    formatted_rows = []
+    id_to_tary = {}
+    for _, row in grouped.iterrows():
+        g = row["Гофра"]
+        ids = str(row["ШК"]).split("\n")
+        formatted_rows.append([g, row["ШК"], row["Количество ШК"], row["Стоимость"]])
+        for pid in ids:
+            pid_clean = str(pid).strip()
+            if not pid_clean:
+                continue
+            if pid_clean in id_to_tary and id_to_tary[pid_clean] != g:
+                # keep first; conflict logged later by caller
+                continue
+            id_to_tary[pid_clean] = g
+            product_ids_set.add(pid_clean)
 
     unknown_values = (
         grouped.loc[~grouped["Гофра"].str.startswith(("3", "4", "7", "9", "10")), "Гофра"]
@@ -67,6 +79,8 @@ def process_file(file_path: str | Path, export_mode: str) -> Tuple[List[List], D
         "source_rows": len(df),
         "groups_total": len(grouped),
         "rows_after_filter": len(formatted_rows),
+        "product_ids": product_ids_set,
+        "id_to_tary": id_to_tary,
     }
 
     return formatted_rows, unknown_summary, stats
