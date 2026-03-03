@@ -57,15 +57,6 @@ def _format_meta_uploaded_at(meta: Optional[dict]) -> str:
         return str(uploaded)
 
 
-def _spaced_rows(rows: List[List], width: int) -> List[List]:
-    spaced: List[List] = []
-    for row in rows:
-        padded = list(row) + [""] * max(0, width - len(row))
-        spaced.append(padded)
-        spaced.append([""] * width)
-    return spaced
-
-
 def update_tables(
     client: gspread.Client,
     spreadsheet_id: str,
@@ -78,18 +69,16 @@ def update_tables(
 ) -> None:
     worksheet = _get_worksheet(client, spreadsheet_id, worksheet_name)
 
-    left_values = _spaced_rows(left_rows, len(LEFT_COLUMNS)) if left_rows else []
-    right_values = _spaced_rows(right_rows, len(RIGHT_COLUMNS)) if right_rows else []
+    start_row = 5  # rows 1-4 reserved (headers + empty row 4)
 
-    # data starts at row 4 (B4 / K4)
-    left_existing = max(len(worksheet.col_values(2)) - 3, 0)  # column B
-    right_existing = max(len(worksheet.col_values(11)) - 3, 0)  # column K
+    left_existing = max(len(worksheet.col_values(2)) - (start_row - 1), 0)  # column B
+    right_existing = max(len(worksheet.col_values(11)) - (start_row - 1), 0)  # column K
 
     clear_ranges = []
     if not skip_left and left_existing:
-        clear_ranges.append(f"B4:E{3 + left_existing}")
+        clear_ranges.append(f"B{start_row}:E{start_row + left_existing - 1}")
     if not skip_right and right_existing:
-        clear_ranges.append(f"K4:O{3 + right_existing}")
+        clear_ranges.append(f"K{start_row}:O{start_row + right_existing - 1}")
     if clear_ranges:
         worksheet.batch_clear(clear_ranges)
 
@@ -102,11 +91,19 @@ def update_tables(
         {"range": "P4", "values": [[_format_meta_uploaded_at(right_meta)]]},
     ]
 
-    if not skip_left and left_values:
-        updates.append({"range": f"B4:E{3 + len(left_values)}", "values": left_values})
-    if not skip_right and right_values:
+    if not skip_left and left_rows:
         updates.append(
-            {"range": f"K4:O{3 + len(right_values)}", "values": right_values}
+            {
+                "range": f"B{start_row}:E{start_row + len(left_rows) - 1}",
+                "values": left_rows,
+            }
+        )
+    if not skip_right and right_rows:
+        updates.append(
+            {
+                "range": f"K{start_row}:O{start_row + len(right_rows) - 1}",
+                "values": right_rows,
+            }
         )
 
     worksheet.batch_update(updates)
