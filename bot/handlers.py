@@ -6,7 +6,12 @@ import time
 import re
 from pathlib import Path
 
-from telegram import InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, Update
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    ReplyKeyboardMarkup,
+    Update,
+)
 from telegram.error import BadRequest
 from telegram.ext import (
     Application,
@@ -28,7 +33,6 @@ from bot.services.excel_24h import (
 )
 from bot.services.no_move_map import load_no_move_map, save_no_move_map
 from bot.services.file_sources import (
-    detect_source,
     download_from_url,
     is_url,
     maybe_extract_zip,
@@ -67,13 +71,23 @@ class BotHandlers:
         self.no_move_map_path = self.data_dir
 
         self.reply_keyboard = ReplyKeyboardMarkup(
-            [[BUTTON_NO_MOVE], [BUTTON_24H], [BUTTON_YA_LAST], [BUTTON_YA_HELP], [BUTTON_ADMIN]],
+            [
+                [BUTTON_NO_MOVE],
+                [BUTTON_24H],
+                [BUTTON_YA_LAST],
+                [BUTTON_YA_HELP],
+                [BUTTON_ADMIN],
+            ],
             resize_keyboard=True,
         )
 
         logger.debug(
             "YANDEX token prefix: %s; dirs: no_move=%s h24=%s",
-            (self.config.yandex_oauth_token[:8] + "***") if self.config.yandex_oauth_token else "none",
+            (
+                (self.config.yandex_oauth_token[:8] + "***")
+                if self.config.yandex_oauth_token
+                else "none"
+            ),
             self.config.yandex_no_move_dir,
             self.config.yandex_24h_dir,
         )
@@ -82,23 +96,28 @@ class BotHandlers:
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("admin", self.admin))
         application.add_handler(
-            MessageHandler(filters.Regex(f"^{re.escape(BUTTON_NO_MOVE)}$"), self.select_no_move)
+            MessageHandler(
+                filters.Regex(f"^{re.escape(BUTTON_NO_MOVE)}$"), self.select_no_move
+            )
         )
         application.add_handler(
             MessageHandler(filters.Regex(f"^{re.escape(BUTTON_24H)}$"), self.select_24h)
         )
         application.add_handler(
-            MessageHandler(filters.Regex(f"^{re.escape(BUTTON_YA_LAST)}$"), self.handle_yadisk_latest)
+            MessageHandler(
+                filters.Regex(f"^{re.escape(BUTTON_YA_LAST)}$"),
+                self.handle_yadisk_latest,
+            )
         )
         application.add_handler(
-            MessageHandler(filters.Regex(f"^{re.escape(BUTTON_YA_HELP)}$"), self.handle_yadisk_help)
+            MessageHandler(
+                filters.Regex(f"^{re.escape(BUTTON_YA_HELP)}$"), self.handle_yadisk_help
+            )
         )
         application.add_handler(
             MessageHandler(filters.Regex(f"^{re.escape(BUTTON_ADMIN)}$"), self.admin)
         )
-        application.add_handler(
-            MessageHandler(filters.Document.ALL, self.handle_file)
-        )
+        application.add_handler(MessageHandler(filters.Document.ALL, self.handle_file))
         application.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text)
         )
@@ -120,13 +139,24 @@ class BotHandlers:
     async def admin(self, update: Update, context: CallbackContext) -> None:
         user = update.effective_user
         if not self._is_admin(user.id):
-            logger.warning("Попытка доступа к /admin user_id=%s username=%s", user.id, user.username)
-            await update.message.reply_text("У вас нет прав для использования этой команды.", reply_markup=self.reply_keyboard)
+            logger.warning(
+                "Попытка доступа к /admin user_id=%s username=%s",
+                user.id,
+                user.username,
+            )
+            await update.message.reply_text(
+                "У вас нет прав для использования этой команды.",
+                reply_markup=self.reply_keyboard,
+            )
             return
 
         admin_keyboard = [
             [InlineKeyboardButton("Просмотреть логи", callback_data="view_logs")],
-            [InlineKeyboardButton("Запустить новую задачу", callback_data="start_task")],
+            [
+                InlineKeyboardButton(
+                    "Запустить новую задачу", callback_data="start_task"
+                )
+            ],
             [InlineKeyboardButton("Остановить бота", callback_data="stop_bot")],
         ]
         await update.message.reply_text(
@@ -137,7 +167,9 @@ class BotHandlers:
     async def select_no_move(self, update: Update, context: CallbackContext) -> None:
         context.user_data["expected_upload"] = EXPECTED_NO_MOVE
         user = update.effective_user
-        logger.info("Выбран режим без движения user_id=%s username=%s", user.id, user.username)
+        logger.info(
+            "Выбран режим без движения user_id=%s username=%s", user.id, user.username
+        )
         await update.message.reply_text(
             "Ок, пришли Excel «без движения» (документ до 20 МБ) или ссылку на файл.",
             reply_markup=self.reply_keyboard,
@@ -152,7 +184,9 @@ class BotHandlers:
             reply_markup=self.reply_keyboard,
         )
 
-    async def handle_yadisk_help(self, update: Update, context: CallbackContext) -> None:
+    async def handle_yadisk_help(
+        self, update: Update, context: CallbackContext
+    ) -> None:
         text = (
             "Как загрузить файл на Яндекс.Диск и отправить боту:\n"
             f"- Для «без движения» положите файл в папку {self.config.yandex_no_move_dir or '/BOT_UPLOADS/no_move/'}\n"
@@ -162,7 +196,9 @@ class BotHandlers:
         )
         await update.message.reply_text(text, reply_markup=self.reply_keyboard)
 
-    async def handle_yadisk_latest(self, update: Update, context: CallbackContext) -> None:
+    async def handle_yadisk_latest(
+        self, update: Update, context: CallbackContext
+    ) -> None:
         user = update.effective_user
         expected = context.user_data.get("expected_upload")
         if not expected:
@@ -173,11 +209,15 @@ class BotHandlers:
             return
 
         if not self.config.yandex_oauth_token:
-            await update.message.reply_text("Яндекс OAuth токен не настроен. Обратитесь к администратору.")
+            await update.message.reply_text(
+                "Яндекс OAuth токен не настроен. Обратитесь к администратору."
+            )
             return
 
         folder = (
-            self.config.yandex_no_move_dir if expected == EXPECTED_NO_MOVE else self.config.yandex_24h_dir
+            self.config.yandex_no_move_dir
+            if expected == EXPECTED_NO_MOVE
+            else self.config.yandex_24h_dir
         ) or "/"
         await update.message.reply_text("Ищу последний файл на Я.Диске...")
 
@@ -195,7 +235,9 @@ class BotHandlers:
             await update.message.reply_text(f"Найден файл: {name}\nСкачиваю…")
 
             filename_suffix = Path(name).suffix or ".xlsx"
-            temp_path = self.workdir / f"yadisk_{user.id}_{int(time.time())}{filename_suffix}"
+            temp_path = (
+                self.workdir / f"yadisk_{user.id}_{int(time.time())}{filename_suffix}"
+            )
             cleanup_paths = [temp_path]
 
             download_start = time.perf_counter()
@@ -219,7 +261,9 @@ class BotHandlers:
             }
 
             await update.message.reply_text("Файл скачан, обрабатываю…")
-            await self._process_excel_file(expected, update, context, excel_path, file_info)
+            await self._process_excel_file(
+                expected, update, context, excel_path, file_info
+            )
 
             logger.info(
                 "YaDisk файл обработан: user_id=%s username=%s mode=%s name=%s size=%s modified=%s duration=%.3fs",
@@ -275,7 +319,9 @@ class BotHandlers:
             return
 
         if self.processing_lock.locked():
-            await update.message.reply_text("Сейчас выполняется другая обработка. Повторите чуть позже.")
+            await update.message.reply_text(
+                "Сейчас выполняется другая обработка. Повторите чуть позже."
+            )
             return
 
         try:
@@ -296,7 +342,9 @@ class BotHandlers:
                 if "File is too big" in str(exc):
                     await self.send_big_file_instructions(update)
                     return
-                logger.exception("Ошибка get_file user_id=%s username=%s", user.id, user.username)
+                logger.exception(
+                    "Ошибка get_file user_id=%s username=%s", user.id, user.username
+                )
                 await update.message.reply_text("Не удалось скачать файл из Telegram.")
                 return
 
@@ -312,7 +360,9 @@ class BotHandlers:
                     cleanup_paths.append(excel_path)
 
                 if not excel_path.lower().endswith((".xlsx", ".xls")):
-                    await update.message.reply_text("Ожидался Excel (.xlsx/.xls). Проверьте файл.")
+                    await update.message.reply_text(
+                        "Ожидался Excel (.xlsx/.xls). Проверьте файл."
+                    )
                     return
 
                 file_info = {
@@ -320,7 +370,9 @@ class BotHandlers:
                     "size": document.file_size,
                     "source": "telegram_document",
                 }
-                await self._process_excel_file(expected, update, context, excel_path, file_info)
+                await self._process_excel_file(
+                    expected, update, context, excel_path, file_info
+                )
             finally:
                 for p in cleanup_paths:
                     try:
@@ -328,10 +380,16 @@ class BotHandlers:
                     except Exception:
                         logger.warning("Не удалось удалить временный файл %s", p)
         except Exception:
-            logger.exception("Ошибка загрузки файла user_id=%s username=%s", user.id, user.username)
-            await update.message.reply_text("Ошибка при загрузке файла. Попробуйте еще раз.")
+            logger.exception(
+                "Ошибка загрузки файла user_id=%s username=%s", user.id, user.username
+            )
+            await update.message.reply_text(
+                "Ошибка при загрузке файла. Попробуйте еще раз."
+            )
 
-    async def _process_url_file(self, update: Update, context: CallbackContext, url: str, expected: str) -> None:
+    async def _process_url_file(
+        self, update: Update, context: CallbackContext, url: str, expected: str
+    ) -> None:
         user = update.effective_user
         status_message = await update.message.reply_text("Скачиваю файл по ссылке...")
         filename_suffix = Path(url).suffix or ".xlsx"
@@ -339,7 +397,9 @@ class BotHandlers:
         cleanup_paths = [temp_path]
         try:
             download_start = time.perf_counter()
-            file_path, size, source_type = await download_from_url(url, str(temp_path), max_bytes=MAX_URL_BYTES)
+            file_path, size, source_type = await download_from_url(
+                url, str(temp_path), max_bytes=MAX_URL_BYTES
+            )
             download_duration = time.perf_counter() - download_start
 
             excel_path = maybe_extract_zip(file_path, self.workdir)
@@ -347,7 +407,9 @@ class BotHandlers:
                 cleanup_paths.append(excel_path)
 
             if not excel_path.lower().endswith((".xlsx", ".xls")):
-                await status_message.edit_text("Ожидался Excel (.xlsx/.xls). Проверьте файл.")
+                await status_message.edit_text(
+                    "Ожидался Excel (.xlsx/.xls). Проверьте файл."
+                )
                 return
 
             file_info = {
@@ -365,12 +427,18 @@ class BotHandlers:
                 expected,
             )
             await status_message.edit_text("Файл скачан, начинаю обработку...")
-            await self._process_excel_file(expected, update, context, excel_path, file_info)
+            await self._process_excel_file(
+                expected, update, context, excel_path, file_info
+            )
         except ValueError as exc:
-            logger.warning("Ошибка скачивания по ссылке user_id=%s url=%s: %s", user.id, url, exc)
+            logger.warning(
+                "Ошибка скачивания по ссылке user_id=%s url=%s: %s", user.id, url, exc
+            )
             await status_message.edit_text(str(exc))
         except Exception:
-            logger.exception("Ошибка скачивания по ссылке user_id=%s url=%s", user.id, url)
+            logger.exception(
+                "Ошибка скачивания по ссылке user_id=%s url=%s", user.id, url
+            )
             await status_message.edit_text("Не удалось скачать файл по ссылке.")
         finally:
             for p in cleanup_paths:
@@ -394,7 +462,9 @@ class BotHandlers:
         else:
             await update.message.reply_text("Неизвестный режим. Выберите кнопку снизу.")
 
-    async def _handle_no_move_file(self, update: Update, context: CallbackContext, file_path: str, file_info: dict) -> None:
+    async def _handle_no_move_file(
+        self, update: Update, context: CallbackContext, file_path: str, file_info: dict
+    ) -> None:
         user = update.effective_user
         context.user_data["expected_upload"] = None
         status_message = await update.message.reply_text("Читаю файл «без движения»...")
@@ -402,7 +472,9 @@ class BotHandlers:
         async with self.processing_lock:
             start_ts = time.perf_counter()
             try:
-                rows, unknown_summary, stats = process_file(file_path, EXPORT_WITHOUT_TRANSFERS)
+                rows, unknown_summary, stats = process_file(
+                    file_path, EXPORT_WITHOUT_TRANSFERS
+                )
 
                 processing_duration = time.perf_counter() - start_ts
                 product_ids = stats.get("product_ids", set())
@@ -422,7 +494,9 @@ class BotHandlers:
                 )
 
                 # Load 24h snapshot if exists
-                snapshot, meta = load_snapshot(self.snapshot_path, self.snapshot_meta_path)
+                snapshot, meta = load_snapshot(
+                    self.snapshot_path, self.snapshot_meta_path
+                )
                 right_rows = build_24h_table(snapshot, id_to_tary) if snapshot else []
 
                 update_tables(
@@ -465,10 +539,16 @@ class BotHandlers:
                 logger.warning("Ошибка файла без движения user_id=%s: %s", user.id, exc)
                 await status_message.edit_text(f"Ошибка файла: {exc}")
             except Exception:
-                logger.exception("Ошибка при обработке без движения user_id=%s", user.id)
-                await status_message.edit_text("Произошла ошибка при обработке. Подробности в логах.")
+                logger.exception(
+                    "Ошибка при обработке без движения user_id=%s", user.id
+                )
+                await status_message.edit_text(
+                    "Произошла ошибка при обработке. Подробности в логах."
+                )
 
-    async def _handle_24h_file(self, update: Update, context: CallbackContext, file_path: str, file_info: dict) -> None:
+    async def _handle_24h_file(
+        self, update: Update, context: CallbackContext, file_path: str, file_info: dict
+    ) -> None:
         user = update.effective_user
         context.user_data["expected_upload"] = None
         status_message = await update.message.reply_text("Читаю файл «24 часа»...")
@@ -479,7 +559,9 @@ class BotHandlers:
             start_ts = time.perf_counter()
             try:
                 snapshot, meta = process_24h_file(file_path, block_ids)
-                save_snapshot(snapshot, meta, self.snapshot_path, self.snapshot_meta_path)
+                save_snapshot(
+                    snapshot, meta, self.snapshot_path, self.snapshot_meta_path
+                )
                 duration = time.perf_counter() - start_ts
 
                 # Построить правую таблицу: пересечение с последним no_move, иначе всё
@@ -492,7 +574,8 @@ class BotHandlers:
                     id_to_tary, _ = load_no_move_map(self.no_move_map_path)
                 if not id_to_tary:
                     await status_message.edit_text(
-                        "Файл 24ч обновлён, но нет сохранённой карты ID тары. Сначала выполните выгрузку «Без движения».")
+                        "Файл 24ч обновлён, но нет сохранённой карты ID тары. Сначала выполните выгрузку «Без движения»."
+                    )
                     return
 
                 right_rows = build_24h_table(snapshot, id_to_tary)
@@ -538,9 +621,13 @@ class BotHandlers:
                 await status_message.edit_text(f"Ошибка файла: {exc}")
             except Exception:
                 logger.exception("Ошибка при обработке 24ч user_id=%s", user.id)
-                await status_message.edit_text("Произошла ошибка при обработке 24ч. Подробности в логах.")
+                await status_message.edit_text(
+                    "Произошла ошибка при обработке 24ч. Подробности в логах."
+                )
 
-    async def admin_button_handler(self, update: Update, context: CallbackContext) -> None:
+    async def admin_button_handler(
+        self, update: Update, context: CallbackContext
+    ) -> None:
         query = update.callback_query
         await query.answer()
         data = query.data
@@ -548,22 +635,35 @@ class BotHandlers:
 
         if data == "view_logs":
             if not self._is_admin(user.id):
-                logger.warning("Отказ в доступе view_logs user_id=%s username=%s", user.id, user.username)
-                await query.message.reply_text("У вас нет прав для выполнения этого действия.")
+                logger.warning(
+                    "Отказ в доступе view_logs user_id=%s username=%s",
+                    user.id,
+                    user.username,
+                )
+                await query.message.reply_text(
+                    "У вас нет прав для выполнения этого действия."
+                )
                 return
             await self._send_logs(query)
             return
 
         if data == "start_task":
             if not self._is_admin(user.id):
-                await query.message.reply_text("У вас нет прав для выполнения этого действия.")
+                await query.message.reply_text(
+                    "У вас нет прав для выполнения этого действия."
+                )
                 return
-            await query.message.reply_text("Выберите режим кнопкой снизу и отправьте файл.", reply_markup=self.reply_keyboard)
+            await query.message.reply_text(
+                "Выберите режим кнопкой снизу и отправьте файл.",
+                reply_markup=self.reply_keyboard,
+            )
             return
 
         if data == "stop_bot":
             if not self._is_admin(user.id):
-                await query.message.reply_text("У вас нет прав для выполнения этого действия.")
+                await query.message.reply_text(
+                    "У вас нет прав для выполнения этого действия."
+                )
                 return
             logger.info("Бот остановлен админом user_id=%s", user.id)
             await query.message.reply_text("Останавливаю бота...")
@@ -597,7 +697,11 @@ class BotHandlers:
 
             buffer = BytesIO(text.encode("utf-8"))
             buffer.name = "bot_tail.log"
-            await query.message.reply_document(document=buffer, caption="Последние 200 строк логов")
+            await query.message.reply_document(
+                document=buffer, caption="Последние 200 строк логов"
+            )
 
     def _is_admin(self, user_id: int) -> bool:
-        return bool(self.config.admin_user_id) and str(user_id) == str(self.config.admin_user_id)
+        return bool(self.config.admin_user_id) and str(user_id) == str(
+            self.config.admin_user_id
+        )

@@ -12,6 +12,9 @@ data/last_24h_snapshot.json
 data/last_24h_meta.json
 data/*.pkl
 *_unzipped/
-data/block_ids.txt
-data/*.json
+data/last_*.json
+data/last_*.pkl
 data/*.zip
+data/*.tmp
+!data/block_ids.txt
+!data/block_ids.txt.example

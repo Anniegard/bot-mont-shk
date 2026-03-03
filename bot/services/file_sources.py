@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import os
-import re
 import zipfile
 from pathlib import Path
 from typing import Literal, Tuple
@@ -27,7 +25,9 @@ def detect_source(url: str) -> Literal["yandex_disk_public", "direct", "unknown"
     return "unknown"
 
 
-async def _fetch_json(session: aiohttp.ClientSession, url: str, retries: int = 3, timeout: int = 10):
+async def _fetch_json(
+    session: aiohttp.ClientSession, url: str, retries: int = 3, timeout: int = 10
+):
     for attempt in range(retries):
         try:
             async with session.get(url, timeout=timeout) as resp:
@@ -39,7 +39,9 @@ async def _fetch_json(session: aiohttp.ClientSession, url: str, retries: int = 3
             await asyncio.sleep(1)
 
 
-async def _download_stream(session: aiohttp.ClientSession, url: str, dest_path: Path, max_bytes: int) -> int:
+async def _download_stream(
+    session: aiohttp.ClientSession, url: str, dest_path: Path, max_bytes: int
+) -> int:
     downloaded = 0
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -50,7 +52,9 @@ async def _download_stream(session: aiohttp.ClientSession, url: str, dest_path: 
                     if chunk:
                         downloaded += len(chunk)
                         if downloaded > max_bytes:
-                            raise ValueError("Скачивание прервано: файл превышает допустимый размер.")
+                            raise ValueError(
+                                "Скачивание прервано: файл превышает допустимый размер."
+                            )
                         f.write(chunk)
     except ClientResponseError as e:
         if "captcha" in str(e).lower():
@@ -62,7 +66,9 @@ async def _download_stream(session: aiohttp.ClientSession, url: str, dest_path: 
     return downloaded
 
 
-async def download_from_url(url: str, dest_path: str, max_bytes: int = 200 * 1024 * 1024) -> Tuple[str, int, str]:
+async def download_from_url(
+    url: str, dest_path: str, max_bytes: int = 200 * 1024 * 1024
+) -> Tuple[str, int, str]:
     """Скачать файл по URL. Возвращает (путь, размер_байт, source_type)."""
     source = detect_source(url)
     dest = Path(dest_path)

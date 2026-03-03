@@ -16,7 +16,10 @@ from telegram.ext import (
     filters,
 )
 
-SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+SCOPE = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
 EXPORT_WITHOUT_TRANSFERS = "export_without_transfers"
 EXPORT_WITH_TRANSFERS = "export_with_transfers"
@@ -83,7 +86,9 @@ def setup_logging() -> None:
 
     formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
     stream_handler = logging.StreamHandler()
-    file_handler = logging.FileHandler(os.path.join(BASE_DIR, "bot_logs.txt"), mode="a", encoding="utf-8")
+    file_handler = logging.FileHandler(
+        os.path.join(BASE_DIR, "bot_logs.txt"), mode="a", encoding="utf-8"
+    )
 
     stream_handler.setFormatter(formatter)
     file_handler.setFormatter(formatter)
@@ -136,14 +141,20 @@ class TelegramBot:
         if ADMIN_USER_ID and str(update.message.from_user.id) == ADMIN_USER_ID:
             admin_keyboard = [
                 [InlineKeyboardButton("Просмотреть логи", callback_data="view_logs")],
-                [InlineKeyboardButton("Запустить новую задачу", callback_data="start_task")],
+                [
+                    InlineKeyboardButton(
+                        "Запустить новую задачу", callback_data="start_task"
+                    )
+                ],
                 [InlineKeyboardButton("Остановить бота", callback_data="stop_bot")],
             ]
             await update.message.reply_text(
                 "Выберите действие:", reply_markup=InlineKeyboardMarkup(admin_keyboard)
             )
         else:
-            await update.message.reply_text("У вас нет прав для использования этой команды.")
+            await update.message.reply_text(
+                "У вас нет прав для использования этой команды."
+            )
 
     async def admin_button_handler(self, update: Update, context: CallbackContext):
         query = update.callback_query
@@ -175,16 +186,22 @@ class TelegramBot:
 
         if query.data == "stop_bot":
             if not ADMIN_USER_ID or str(query.from_user.id) != ADMIN_USER_ID:
-                await query.message.reply_text("Остановка доступна только администратору.")
+                await query.message.reply_text(
+                    "Остановка доступна только администратору."
+                )
                 return
             await query.message.reply_text("Останавливаю бота...")
             await context.application.stop()
 
     async def handle_file(self, update: Update, context: CallbackContext):
-        logging.info("Новый запрос на обработку файла от %s", update.message.from_user.username)
+        logging.info(
+            "Новый запрос на обработку файла от %s", update.message.from_user.username
+        )
 
         if self.processing_lock.locked():
-            await update.message.reply_text("Сейчас выполняется другая выгрузка. Повторите чуть позже.")
+            await update.message.reply_text(
+                "Сейчас выполняется другая выгрузка. Повторите чуть позже."
+            )
             return
 
         document = update.message.document
@@ -209,9 +226,21 @@ class TelegramBot:
             return
 
         export_keyboard = [
-            [InlineKeyboardButton("Выгрузка без передач", callback_data=EXPORT_WITHOUT_TRANSFERS)],
-            [InlineKeyboardButton("Выгрузка с передачами", callback_data=EXPORT_WITH_TRANSFERS)],
-            [InlineKeyboardButton("Выгрузка только передач", callback_data=EXPORT_ONLY_TRANSFERS)],
+            [
+                InlineKeyboardButton(
+                    "Выгрузка без передач", callback_data=EXPORT_WITHOUT_TRANSFERS
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "Выгрузка с передачами", callback_data=EXPORT_WITH_TRANSFERS
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    "Выгрузка только передач", callback_data=EXPORT_ONLY_TRANSFERS
+                )
+            ],
             [InlineKeyboardButton("Отменить", callback_data="cancel")],
         ]
         await update.message.reply_text(
@@ -221,12 +250,16 @@ class TelegramBot:
 
     async def process_export_mode(self, query, context: CallbackContext):
         if self.processing_lock.locked():
-            await query.message.reply_text("Сейчас выполняется другая выгрузка. Попробуйте через минуту.")
+            await query.message.reply_text(
+                "Сейчас выполняется другая выгрузка. Попробуйте через минуту."
+            )
             return
 
         file_path = context.user_data.get("pending_file_path")
         if not file_path or not os.path.exists(file_path):
-            await query.message.reply_text("Файл для обработки не найден. Загрузите файл заново.")
+            await query.message.reply_text(
+                "Файл для обработки не найден. Загрузите файл заново."
+            )
             return
 
         mode = query.data
@@ -290,7 +323,9 @@ class TelegramBot:
 
         df["Стоимость"] = pd.to_numeric(df["Стоимость"], errors="coerce").fillna(0)
         df["ШК"] = df["ШК"].astype(str)
-        df["Гофра"] = df["Гофра"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+        df["Гофра"] = (
+            df["Гофра"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+        )
 
         agg = (
             df.groupby("Гофра", as_index=False)
@@ -314,7 +349,9 @@ class TelegramBot:
 
         formatted_rows = [
             [row[0], row[1], row[3], row[2]]
-            for row in agg[["Гофра", "ШК", "Стоимость", "Количество ШК"]].values.tolist()
+            for row in agg[
+                ["Гофра", "ШК", "Стоимость", "Количество ШК"]
+            ].values.tolist()
         ]
 
         unknown_values = (
@@ -341,7 +378,9 @@ class TelegramBot:
             )
         if batch_update:
             ws.batch_update(batch_update)
-        logging.info("Данные успешно загружены в Google Sheets. Добавлено %s строк.", len(rows))
+        logging.info(
+            "Данные успешно загружены в Google Sheets. Добавлено %s строк.", len(rows)
+        )
 
     async def cleanup_pending_file(self, context: CallbackContext):
         file_path = context.user_data.pop("pending_file_path", None)
@@ -350,7 +389,9 @@ class TelegramBot:
                 os.remove(file_path)
                 logging.info("Удален временный файл: %s", file_path)
             except Exception as e:
-                logging.warning("Не удалось удалить временный файл %s: %s", file_path, e)
+                logging.warning(
+                    "Не удалось удалить временный файл %s: %s", file_path, e
+                )
 
     def run(self):
         self.application.run_polling()

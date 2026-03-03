@@ -55,7 +55,9 @@ def _parse_forecast(value: str) -> datetime | None:
     return parsed.to_pydatetime()
 
 
-def process_24h_file(file_path: str | Path, block_ids: set[str]) -> Tuple[Dict[str, Dict], SnapshotMeta]:
+def process_24h_file(
+    file_path: str | Path, block_ids: set[str]
+) -> Tuple[Dict[str, Dict], SnapshotMeta]:
     df = pd.read_excel(file_path, dtype=str, engine="openpyxl")
     df.columns = [col.strip() for col in df.columns]
 
@@ -78,7 +80,9 @@ def process_24h_file(file_path: str | Path, block_ids: set[str]) -> Tuple[Dict[s
     if missing:
         raise ValueError(f"Не найдены обязательные колонки 24ч: {', '.join(missing)}")
 
-    subset_cols = [block_col, product_col, forecast_col, cost_col] + ([tare_col] if tare_col else [])
+    subset_cols = [block_col, product_col, forecast_col, cost_col] + (
+        [tare_col] if tare_col else []
+    )
     df = df[subset_cols]
     rename_map = {
         block_col: "block_id",
@@ -93,7 +97,9 @@ def process_24h_file(file_path: str | Path, block_ids: set[str]) -> Tuple[Dict[s
     rows_total = len(df)
 
     df["block_id"] = df["block_id"].astype(str).str.strip()
-    df["product_id"] = df["product_id"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    df["product_id"] = (
+        df["product_id"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    )
     df["forecast"] = df["forecast"].astype(str).str.strip()
     df["block_id"] = df["block_id"].replace({"nan": "", "NaN": ""})
     df["product_id"] = df["product_id"].replace({"nan": "", "NaN": ""})
@@ -122,7 +128,11 @@ def process_24h_file(file_path: str | Path, block_ids: set[str]) -> Tuple[Dict[s
             continue
 
         product_id = row["product_id"]
-        tare_id = str(row["tare_id"]).strip() if "tare_id" in row and not pd.isna(row["tare_id"]) else ""
+        tare_id = (
+            str(row["tare_id"]).strip()
+            if "tare_id" in row and not pd.isna(row["tare_id"])
+            else ""
+        )
         cost_value = _parse_cost(row["cost"])
 
         existing = snapshot.get(product_id)
@@ -156,7 +166,9 @@ def process_24h_file(file_path: str | Path, block_ids: set[str]) -> Tuple[Dict[s
     return snapshot, meta
 
 
-def save_snapshot(snapshot: Dict[str, Dict], meta: SnapshotMeta, snapshot_path: Path, meta_path: Path) -> None:
+def save_snapshot(
+    snapshot: Dict[str, Dict], meta: SnapshotMeta, snapshot_path: Path, meta_path: Path
+) -> None:
     snapshot_path.parent.mkdir(parents=True, exist_ok=True)
     with snapshot_path.open("w", encoding="utf-8") as f:
         json.dump(snapshot, f, ensure_ascii=False, indent=2)
@@ -164,7 +176,9 @@ def save_snapshot(snapshot: Dict[str, Dict], meta: SnapshotMeta, snapshot_path: 
         json.dump(asdict(meta), f, ensure_ascii=False, indent=2)
 
 
-def load_snapshot(snapshot_path: Path, meta_path: Path) -> Tuple[Dict[str, Dict] | None, Dict | None]:
+def load_snapshot(
+    snapshot_path: Path, meta_path: Path
+) -> Tuple[Dict[str, Dict] | None, Dict | None]:
     if not snapshot_path.exists() or not meta_path.exists():
         return None, None
     snapshot = json.loads(snapshot_path.read_text(encoding="utf-8"))
@@ -172,7 +186,9 @@ def load_snapshot(snapshot_path: Path, meta_path: Path) -> Tuple[Dict[str, Dict]
     return snapshot, meta
 
 
-def build_24h_table(snapshot: Dict[str, Dict], id_to_tary: Dict[str, str]) -> List[List]:
+def build_24h_table(
+    snapshot: Dict[str, Dict], id_to_tary: Dict[str, str]
+) -> List[List]:
     # Filter to identifiers present in mapping
     filtered = {pid: data for pid, data in snapshot.items() if pid in id_to_tary}
 
@@ -210,5 +226,9 @@ def build_24h_table(snapshot: Dict[str, Dict], id_to_tary: Dict[str, str]) -> Li
             ]
         )
 
-    rows.sort(key=lambda r: datetime.strptime(r[4], "%d.%m.%Y %H:%M") if r[4] else datetime.max)
+    rows.sort(
+        key=lambda r: (
+            datetime.strptime(r[4], "%d.%m.%Y %H:%M") if r[4] else datetime.max
+        )
+    )
     return rows

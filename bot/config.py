@@ -37,7 +37,11 @@ def load_config(env_path: str | None = None) -> Config:
     """
     root_dir = Path(__file__).resolve().parent.parent
     env_override = os.getenv("BOT_CONFIG_FILE")
-    env_file = Path(env_path or env_override) if (env_path or env_override) else root_dir / ".env"
+    env_file = (
+        Path(env_path or env_override)
+        if (env_path or env_override)
+        else root_dir / ".env"
+    )
     if env_file and not env_file.is_absolute():
         env_file = (root_dir / env_file).resolve()
     if env_file.exists():
@@ -46,7 +50,9 @@ def load_config(env_path: str | None = None) -> Config:
         # Fallback to default behaviour (environment-only) if .env is absent
         load_dotenv(override=False)
 
-    telegram_token = os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or ""
+    telegram_token = (
+        os.getenv("TELEGRAM_TOKEN") or os.getenv("TELEGRAM_BOT_TOKEN") or ""
+    )
     spreadsheet_id = os.getenv("SPREADSHEET_ID", "")
     credentials_path_value = os.getenv("GOOGLE_CREDENTIALS_PATH", "")
     worksheet_name = os.getenv("WORKSHEET_NAME")
@@ -55,7 +61,9 @@ def load_config(env_path: str | None = None) -> Config:
     yandex_no_move_dir = os.getenv("YANDEX_NO_MOVE_DIR") or "/BOT_UPLOADS/no_move/"
     yandex_24h_dir = os.getenv("YANDEX_24H_DIR") or "/BOT_UPLOADS/24h/"
     yandex_allowed_exts = tuple(
-        e.strip() for e in (os.getenv("YANDEX_ALLOWED_EXTS") or ".xlsx,.xls,.zip").split(",") if e.strip()
+        e.strip()
+        for e in (os.getenv("YANDEX_ALLOWED_EXTS") or ".xlsx,.xls,.zip").split(",")
+        if e.strip()
     )
     yandex_max_mb = int(os.getenv("YANDEX_MAX_MB") or 200)
 
@@ -68,7 +76,9 @@ def load_config(env_path: str | None = None) -> Config:
         missing.append("GOOGLE_CREDENTIALS_PATH")
 
     if missing:
-        raise ValueError(f"Missing required environment variables: {', '.join(missing)}")
+        raise ValueError(
+            f"Missing required environment variables: {', '.join(missing)}"
+        )
 
     credentials_path = _resolve_credentials_path(credentials_path_value, root_dir)
     if not credentials_path.exists():

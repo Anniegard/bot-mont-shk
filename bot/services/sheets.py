@@ -8,13 +8,22 @@ from typing import List, Optional
 import gspread
 from google.oauth2.service_account import Credentials
 
-SCOPE = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+SCOPE = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 
 LEFT_HEADER_TITLE = "Выгрузка Идентификатор товара без движения"
 LEFT_COLUMNS = ["Гофра", "Идентификатор товара", "Кол-во", "Стоимость"]
 
 RIGHT_HEADER_TITLE = "Товар, который спишется в течение 24ч"
-RIGHT_COLUMNS = ["ID тары", "Идентификатор товара", "Кол-во", "Стоимость", "Когда начнёт списываться?"]
+RIGHT_COLUMNS = [
+    "ID тары",
+    "Идентификатор товара",
+    "Кол-во",
+    "Стоимость",
+    "Когда начнёт списываться?",
+]
 META_LABEL = "Актуальность файла 24ч:"
 
 
@@ -23,7 +32,9 @@ def authorize_client(credentials_path: Path) -> gspread.Client:
     return gspread.authorize(creds)
 
 
-def _get_worksheet(client: gspread.Client, spreadsheet_id: str, worksheet_name: Optional[str]):
+def _get_worksheet(
+    client: gspread.Client, spreadsheet_id: str, worksheet_name: Optional[str]
+):
     spreadsheet = client.open_by_key(spreadsheet_id)
     if worksheet_name:
         try:
@@ -94,7 +105,9 @@ def update_tables(
     if not skip_left and left_values:
         updates.append({"range": f"B4:E{3 + len(left_values)}", "values": left_values})
     if not skip_right and right_values:
-        updates.append({"range": f"K4:O{3 + len(right_values)}", "values": right_values})
+        updates.append(
+            {"range": f"K4:O{3 + len(right_values)}", "values": right_values}
+        )
 
     worksheet.batch_update(updates)
 
@@ -107,4 +120,8 @@ def update_tables(
     except Exception:
         pass
 
-    logging.info("Таблицы обновлены: без движения строк=%s, 24ч строк=%s", len(left_rows), len(right_rows))
+    logging.info(
+        "Таблицы обновлены: без движения строк=%s, 24ч строк=%s",
+        len(left_rows),
+        len(right_rows),
+    )
