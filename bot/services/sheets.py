@@ -4,6 +4,7 @@ import logging
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
+from zoneinfo import ZoneInfo
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -25,6 +26,8 @@ RIGHT_COLUMNS = [
     "Когда начнёт списываться?",
 ]
 META_LABEL = "Актуальность файла 24ч:"
+MOSCOW_TZ = ZoneInfo("Europe/Moscow")
+UTC_TZ = ZoneInfo("UTC")
 
 
 def authorize_client(credentials_path: Path) -> gspread.Client:
@@ -52,6 +55,9 @@ def _format_meta_uploaded_at(meta: Optional[dict]) -> str:
         return "нет данных"
     try:
         dt = datetime.fromisoformat(uploaded)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=UTC_TZ)
+        dt = dt.astimezone(MOSCOW_TZ)
         return dt.strftime("%d.%m.%Y %H:%M")
     except Exception:
         return str(uploaded)
@@ -87,8 +93,8 @@ def update_tables(
         {"range": "B3:E3", "values": [LEFT_COLUMNS]},
         {"range": "K2:O2", "values": [[RIGHT_HEADER_TITLE, "", "", "", ""]]},
         {"range": "K3:O3", "values": [RIGHT_COLUMNS]},
-        {"range": "P3", "values": [[META_LABEL]]},
-        {"range": "P4", "values": [[_format_meta_uploaded_at(right_meta)]]},
+        {"range": "P2", "values": [[META_LABEL]]},
+        {"range": "P3", "values": [[_format_meta_uploaded_at(right_meta)]]},
     ]
 
     if not skip_left and left_rows:

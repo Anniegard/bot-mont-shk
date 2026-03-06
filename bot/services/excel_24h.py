@@ -6,6 +6,7 @@ from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Iterable, List, Tuple
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 
@@ -153,7 +154,7 @@ def process_24h_file(
     rows_valid = len(snapshot)
 
     meta = SnapshotMeta(
-        uploaded_at=datetime.now().isoformat(timespec="seconds"),
+        uploaded_at=datetime.now(ZoneInfo("Europe/Moscow")).isoformat(timespec="seconds"),
         source_filename=Path(file_path).name,
         rows_total=rows_total,
         rows_after_filter=rows_after_filter,
@@ -216,13 +217,15 @@ def build_24h_table(
         if not forecasts:
             continue
         min_forecast = min(forecasts)
+        forecast_text = min_forecast.strftime("%d.%m.%Y %H:%M")
+        forecast_text = forecast_text.lstrip("’‘'").strip()
         rows.append(
             [
                 tare_id,
                 "\n".join(ids),
                 len(ids),
                 cost_sum,
-                min_forecast.strftime("%d.%m.%Y %H:%M"),
+                forecast_text,
             ]
         )
 

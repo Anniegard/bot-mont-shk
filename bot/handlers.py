@@ -4,6 +4,7 @@ import asyncio
 import logging
 import time
 import re
+from html import escape
 from pathlib import Path
 
 from telegram import (
@@ -24,7 +25,12 @@ from telegram.ext import (
 
 from bot.config import Config
 from bot.services.block_ids import load_block_ids
-from bot.services.excel import EXPORT_WITHOUT_TRANSFERS, process_file
+from bot.services.excel import (
+    EXPORT_ONLY_TRANSFERS,
+    EXPORT_WITH_TRANSFERS,
+    EXPORT_WITHOUT_TRANSFERS,
+    process_file,
+)
 from bot.services.excel_24h import (
     build_24h_table,
     load_snapshot,
@@ -50,6 +56,28 @@ BUTTON_YA_HELP = "📎 Инструкция по загрузке на Диск"
 
 EXPECTED_NO_MOVE = "no_move"
 EXPECTED_24H = "24h"
+NO_MOVE_EXPORT_KEY = "no_move_export_mode"
+
+NO_MOVE_EXPORT_CALLBACK_PREFIX = "no_move_mode:"
+NO_MOVE_EXPORT_BUTTONS = {
+    f"{NO_MOVE_EXPORT_CALLBACK_PREFIX}with": (
+        EXPORT_WITH_TRANSFERS,
+        "С передачами",
+    ),
+    f"{NO_MOVE_EXPORT_CALLBACK_PREFIX}without": (
+        EXPORT_WITHOUT_TRANSFERS,
+        "Без передач",
+    ),
+    f"{NO_MOVE_EXPORT_CALLBACK_PREFIX}only": (
+        EXPORT_ONLY_TRANSFERS,
+        "Только передачи",
+    ),
+}
+NO_MOVE_EXPORT_ORDER = [
+    f"{NO_MOVE_EXPORT_CALLBACK_PREFIX}with",
+    f"{NO_MOVE_EXPORT_CALLBACK_PREFIX}without",
+    f"{NO_MOVE_EXPORT_CALLBACK_PREFIX}only",
+]
 
 MAX_TG_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_URL_BYTES = 200 * 1024 * 1024
@@ -121,6 +149,11 @@ class BotHandlers:
         application.add_handler(
             MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_text)
         )
+        application.add_handler(
+            CallbackQueryHandler(
+                self.no_move_mode_selected, pattern=f"^{NO_MOVE_EXPORT_CALLBACK_PREFIX}"
+            )
+        )
         application.add_handler(CallbackQueryHandler(self.admin_button_handler))
 
     async def start(self, update: Update, context: CallbackContext) -> None:
@@ -166,13 +199,14 @@ class BotHandlers:
 
     async def select_no_move(self, update: Update, context: CallbackContext) -> None:
         context.user_data["expected_upload"] = EXPECTED_NO_MOVE
+        context.user_data[NO_MOVE_EXPORT_KEY] = None
         user = update.effective_user
         logger.info(
             "Выбран режим без движения user_id=%s username=%s", user.id, user.username
         )
         await update.message.reply_text(
-            "Ок, пришли Excel «без движения» (документ до 20 МБ) или ссылку на файл.",
-            reply_markup=self.reply_keyboard,
+            "Выберите тип выгрузки для режима «Без движения»:",
+            reply_markup=self._no_move_mode_keyboard(),
         )
 
     async def select_24h(self, update: Update, context: CallbackContext) -> None:
@@ -183,6 +217,63 @@ class BotHandlers:
             "Ок, пришли Excel «24 часа» (документ до 20 МБ) или ссылку на файл.",
             reply_markup=self.reply_keyboard,
         )
+
+    def _no_move_mode_keyboard(self) -> InlineKeyboardMarkup:
+        buttons = [
+            InlineKeyboardButton(NO_MOVE_EXPORT_BUTTONS[cb][1], callback_data=cb)
+            for cb in NO_MOVE_EXPORT_ORDER
+        ]
+        return InlineKeyboardMarkup([buttons])
+
+    async def no_move_mode_selected(
+        self, update: Update, context: CallbackContext
+    ) -> None:
+        query = update.callback_query
+        await query.answer()
+        data = query.data
+        if data not in NO_MOVE_EXPORT_BUTTONS:
+            return
+
+        export_mode, label = NO_MOVE_EXPORT_BUTTONS[data]
+        context.user_data[NO_MOVE_EXPORT_KEY] = export_mode
+        context.user_data["expected_upload"] = EXPECTED_NO_MOVE
+        user = query.from_user
+        logger.info(
+            "Выбран подрежим без движения user_id=%s username=%s mode=%s",
+            user.id,
+            user.username,
+            export_mode,
+        )
+
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        await query.message.reply_text(
+            f"Режим выбран: {label.lower()}. Пришлите Excel или ссылку.",
+            reply_markup=self.reply_keyboard,
+        )
+
+    async def _ensure_no_move_mode_selected(
+        self, update: Update, context: CallbackContext
+    ) -> str | None:
+        export_mode = context.user_data.get(NO_MOVE_EXPORT_KEY)
+        if export_mode:
+            return export_mode
+        await update.message.reply_text(
+            "Сначала выберите тип выгрузки для режима «Без движения»:",
+            reply_markup=self._no_move_mode_keyboard(),
+        )
+        return None
+
+    def _sheet_link_html(self) -> str | None:
+        if not self.config.spreadsheet_id:
+            return None
+        link = (
+            f"https://docs.google.com/spreadsheets/d/{self.config.spreadsheet_id}/edit"
+        )
+        return f'<a href="{escape(link)}">Ссылка на таблицу</a>'
 
     async def handle_yadisk_help(
         self, update: Update, context: CallbackContext
@@ -207,6 +298,11 @@ class BotHandlers:
                 reply_markup=self.reply_keyboard,
             )
             return
+
+        if expected == EXPECTED_NO_MOVE:
+            export_mode = await self._ensure_no_move_mode_selected(update, context)
+            if not export_mode:
+                return
 
         if not self.config.yandex_oauth_token:
             await update.message.reply_text(
@@ -298,6 +394,12 @@ class BotHandlers:
                     reply_markup=self.reply_keyboard,
                 )
                 return
+            if expected == EXPECTED_NO_MOVE:
+                export_mode = await self._ensure_no_move_mode_selected(
+                    update, context
+                )
+                if not export_mode:
+                    return
             await self._process_url_file(update, context, text, expected)
             return
 
@@ -317,6 +419,11 @@ class BotHandlers:
                 reply_markup=self.reply_keyboard,
             )
             return
+
+        if expected == EXPECTED_NO_MOVE:
+            export_mode = await self._ensure_no_move_mode_selected(update, context)
+            if not export_mode:
+                return
 
         if self.processing_lock.locked():
             await update.message.reply_text(
@@ -456,14 +563,28 @@ class BotHandlers:
         file_info: dict,
     ) -> None:
         if expected == EXPECTED_NO_MOVE:
-            await self._handle_no_move_file(update, context, file_path, file_info)
+            export_mode = context.user_data.get(NO_MOVE_EXPORT_KEY)
+            if not export_mode:
+                await update.message.reply_text(
+                    "Сначала выберите тип выгрузки для режима «Без движения»:",
+                    reply_markup=self._no_move_mode_keyboard(),
+                )
+                return
+            await self._handle_no_move_file(
+                update, context, file_path, file_info, export_mode
+            )
         elif expected == EXPECTED_24H:
             await self._handle_24h_file(update, context, file_path, file_info)
         else:
             await update.message.reply_text("Неизвестный режим. Выберите кнопку снизу.")
 
     async def _handle_no_move_file(
-        self, update: Update, context: CallbackContext, file_path: str, file_info: dict
+        self,
+        update: Update,
+        context: CallbackContext,
+        file_path: str,
+        file_info: dict,
+        export_mode: str,
     ) -> None:
         user = update.effective_user
         context.user_data["expected_upload"] = None
@@ -472,9 +593,7 @@ class BotHandlers:
         async with self.processing_lock:
             start_ts = time.perf_counter()
             try:
-                rows, unknown_summary, stats = process_file(
-                    file_path, EXPORT_WITHOUT_TRANSFERS
-                )
+                rows, unknown_summary, stats = process_file(file_path, export_mode)
 
                 processing_duration = time.perf_counter() - start_ts
                 product_ids = stats.get("product_ids", set())
@@ -510,8 +629,14 @@ class BotHandlers:
                     skip_right=False,
                 )
 
+                export_label = next(
+                    (label for mode, label in NO_MOVE_EXPORT_BUTTONS.values() if mode == export_mode),
+                    export_mode,
+                )
+                safe_label = escape(export_label.lower())
                 result_message = (
                     "Готово. Левая таблица обновлена."
+                    f"\nТип выгрузки: {safe_label}."
                     f"\nСтрок для выгрузки: {len(rows)}."
                     f"\nСтрок 24ч: {len(right_rows)}."
                 )
@@ -519,12 +644,19 @@ class BotHandlers:
                     values = ", ".join(unknown_summary["values"])
                     result_message += (
                         f"\nНестандартные Гофры (порог > 2000): {unknown_summary['count']} шт."
-                        f"\nЗначения: {values}"
+                        f"\nЗначения: {escape(values)}"
                     )
-                await status_message.edit_text(result_message)
+                link_html = self._sheet_link_html()
+                if link_html:
+                    result_message += f"\n{link_html}"
+                await status_message.edit_text(
+                    result_message,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
 
                 logger.info(
-                    "Без движения успешно: user_id=%s username=%s file=%s size=%s source=%s rows=%s duration=%.3fs products=%s right_rows=%s",
+                    "Без движения успешно: user_id=%s username=%s file=%s size=%s source=%s rows=%s duration=%.3fs products=%s right_rows=%s export_mode=%s",
                     user.id,
                     user.username,
                     file_info.get("filename"),
@@ -534,6 +666,7 @@ class BotHandlers:
                     processing_duration,
                     len(product_ids),
                     len(right_rows),
+                    export_mode,
                 )
             except ValueError as exc:
                 logger.warning("Ошибка файла без движения user_id=%s: %s", user.id, exc)
@@ -591,11 +724,19 @@ class BotHandlers:
                     skip_right=False,
                 )
 
-                await status_message.edit_text(
+                result_message = (
                     f"Файл 24ч обновлён и загружен в таблицу.\nСтрок в исходнике: {meta.rows_total}."
                     f"\nПосле фильтров: {meta.rows_after_filter}."
                     f"\nСохранено уникальных товаров: {meta.rows_valid}."
                     f"\nСтрок выгружено в правый блок: {len(right_rows)}."
+                )
+                link_html = self._sheet_link_html()
+                if link_html:
+                    result_message += f"\n{link_html}"
+                await status_message.edit_text(
+                    result_message,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
                 )
 
                 logger.info(
