@@ -14,6 +14,7 @@ Telegram-бот принимает два типа файлов и пишет р
   - 📎 Инструкция по загрузке на Диск.
   - 🛠 Админ-панель (только для администраторов из `BOT_ADMIN_IDS` или `ADMIN_USER_ID`).
 - Admin review layer для `raw_yadisk_rows`: просмотр очереди unresolved строк, детали, кандидаты, ручная привязка к существующему `case_id`, явный unlink, ignore/re-open, audit trail.
+- Admin search layer: read-only поиск кейсов и связанных raw-строк прямо из Telegram.
 - Приём входных данных: документ в Telegram до 20 МБ, прямая ссылка, Яндекс.Диск (OAuth, без публичных ссылок), zip с Excel внутри.
 - «Без движения»: группировка по «Гофра», идентификаторы товара собираются через `\n` в одной ячейке, фильтр `Стоимость > 2000`, колонка названа «Идентификатор товара».
 - «24 часа»: берётся snapshot, пересекается с картой ID тары из «Без движения», группируется по ID тары, берётся минимальный прогноз по группе, сортируется по времени.
@@ -70,6 +71,10 @@ python main.py
 3. «📎 Инструкция…» — напоминает, куда класть файлы на Я.Диск.
 4. Админ-панель — только для администраторов из `BOT_ADMIN_IDS` или `ADMIN_USER_ID`.
 5. Admin review-команды для unresolved raw-строк:
+   - `/case_help`
+   - `/case <query>`
+   - `/case_raw <case_id>`
+   - `/raw_find <query>`
    - `/raw_help`
    - `/raw_queue [limit] [source_kind]`
    - `/raw_show <raw_id>`
@@ -78,9 +83,12 @@ python main.py
    - `/raw_unlink <raw_id> [note]`
    - `/raw_ignore <raw_id> [note]`
    - `/raw_pending <raw_id> [note]`
+   - `/case` ищет по `case_id -> ШК -> тара/передача -> наименование`.
+   - `/case_raw` показывает raw-строки, уже связанные с кейсом.
+   - `/raw_find` ищет raw-строки по `ШК`, `таре/передаче` или `наименованию`.
    - `/raw_pending` только возвращает строку в review queue.
    - `/raw_unlink` явно снимает связь с кейсом и тоже возвращает строку в `pending`.
-   - Google Sheets остаётся master-источником данных кейса; review-команды не меняют `cases` и не создают новые кейсы.
+   - Поиск read-only: Google Sheets остаётся master-источником данных кейса; search/review-команды не меняют `cases` и не создают новые кейсы.
 
 ## Яндекс.Диск (OAuth, без публичных ссылок)
 - Создайте папки `disk:/BOT_UPLOADS/no_move/` и `disk:/BOT_UPLOADS/24h/`.
@@ -104,6 +112,10 @@ pytest
   - ambiguous matching без авто-линковки;
   - сохранение существующего `case_id` без перегенерации;
   - manual link / manual unlink / ignore / mark pending для raw review;
+  - case search по `case_id`;
+  - приоритет поиска кейса по `ШК` над `тарой/передачей`;
+  - linked raw rows для кейса;
+  - raw search по `ШК` и `таре/передаче`;
   - parsing `BOT_ADMIN_IDS` / `ADMIN_USER_ID`.
 - Сознательно не покрыто на этом этапе:
   - живые интеграции с Google Sheets и Yandex Disk;

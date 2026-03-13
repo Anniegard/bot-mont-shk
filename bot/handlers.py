@@ -58,6 +58,15 @@ from bot.services.raw_review import (
     manual_unlink_raw_row,
     mark_raw_row_pending,
 )
+from bot.services.search_service import (
+    DEFAULT_CASE_LIMIT,
+    DEFAULT_CASE_RAW_LIMIT,
+    DEFAULT_RAW_LIMIT,
+    get_case_by_case_id as get_search_case_by_case_id,
+    get_raw_rows_for_case,
+    search_cases,
+    search_raw_rows,
+)
 from bot.services.sheets import update_tables
 
 logger = logging.getLogger(__name__)
@@ -137,6 +146,10 @@ class BotHandlers:
     def register(self, application: Application) -> None:
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("admin", self.admin))
+        application.add_handler(CommandHandler("case_help", self.case_help))
+        application.add_handler(CommandHandler("case", self.case_search))
+        application.add_handler(CommandHandler("case_raw", self.case_raw))
+        application.add_handler(CommandHandler("raw_find", self.raw_find))
         application.add_handler(CommandHandler("raw_help", self.raw_help))
         application.add_handler(CommandHandler("raw_queue", self.raw_queue))
         application.add_handler(CommandHandler("raw_show", self.raw_show))
@@ -214,6 +227,7 @@ class BotHandlers:
             return
         await update.message.reply_text(
             "Команды разбора raw-строк:\n"
+            "/case_help - поиск кейсов и связанных raw\n"
             "/raw_queue [limit] [source_kind] - очередь неразобранных строк\n"
             "/raw_show <raw_id> - детали raw-строки\n"
             "/raw_candidates <raw_id> - безопасные кандидаты case_id\n"
@@ -222,6 +236,110 @@ class BotHandlers:
             "/raw_ignore <raw_id> [note] - пометить как игнор\n"
             "/raw_pending <raw_id> [note] - вернуть в очередь без снятия связи"
         )
+
+    async def case_help(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_admin_access(update, command_name="/case_help"):
+            return
+        await update.message.reply_text(
+            "Поиск по кейсам и raw:\n"
+            "/case <query> - кейс по case_id, ШК, таре/передаче или наименованию\n"
+            "/case_raw <case_id> - связанные raw-строки кейса\n"
+            "/raw_find <query> - raw по ШК, таре/передаче или наименованию\n"
+            "Поиск только читает данные. Google Sheets остаётся master для cases."
+        )
+
+    async def case_search(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_admin_access(update, command_name="/case"):
+            return
+
+        query = self._parse_query_text(context.args)
+        if not query:
+            await update.message.reply_text("Использование: /case <query>")
+            return
+
+        search_result = search_cases(
+            query,
+            limit=DEFAULT_CASE_LIMIT,
+            db_path=self.config.db_path,
+        )
+        cases = search_result["results"]
+        if not cases:
+            await update.message.reply_text("Кейсы не найдены.")
+            return
+
+        if len(cases) == 1 and search_result["match_type"] != "partial":
+            await update.message.reply_text(self._format_case_card(cases[0]))
+            return
+
+        lines = [
+            f"Найдено кейсов: {len(cases)}.",
+            self._format_search_hint(search_result),
+            *[self._format_case_list_line(case_row) for case_row in cases],
+        ]
+        if search_result["truncated"]:
+            lines.append(f"Показаны первые {DEFAULT_CASE_LIMIT}.")
+        await update.message.reply_text("\n".join(lines))
+
+    async def case_raw(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_admin_access(update, command_name="/case_raw"):
+            return
+
+        case_id = self._parse_query_text(context.args)
+        if not case_id:
+            await update.message.reply_text("Использование: /case_raw <case_id>")
+            return
+
+        case_row = get_search_case_by_case_id(case_id, db_path=self.config.db_path)
+        if case_row is None:
+            await update.message.reply_text(f"Кейс {case_id} не найден.")
+            return
+
+        rows = get_raw_rows_for_case(
+            case_id,
+            limit=DEFAULT_CASE_RAW_LIMIT + 1,
+            db_path=self.config.db_path,
+        )
+        if not rows:
+            await update.message.reply_text(
+                f"У кейса {case_id} нет связанных raw-строк."
+            )
+            return
+
+        lines = [
+            f"Связанные raw для {case_id}:",
+            *[self._format_case_raw_line(row) for row in rows[:DEFAULT_CASE_RAW_LIMIT]],
+        ]
+        if len(rows) > DEFAULT_CASE_RAW_LIMIT:
+            lines.append(f"Показаны первые {DEFAULT_CASE_RAW_LIMIT}.")
+        await update.message.reply_text("\n".join(lines))
+
+    async def raw_find(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_admin_access(update, command_name="/raw_find"):
+            return
+
+        query = self._parse_query_text(context.args)
+        if not query:
+            await update.message.reply_text("Использование: /raw_find <query>")
+            return
+
+        search_result = search_raw_rows(
+            query,
+            limit=DEFAULT_RAW_LIMIT,
+            db_path=self.config.db_path,
+        )
+        rows = search_result["results"]
+        if not rows:
+            await update.message.reply_text("Raw-строки не найдены.")
+            return
+
+        lines = [
+            f"Найдено raw-строк: {len(rows)}.",
+            self._format_search_hint(search_result),
+            *[self._format_raw_search_line(row) for row in rows],
+        ]
+        if search_result["truncated"]:
+            lines.append(f"Показаны первые {DEFAULT_RAW_LIMIT}.")
+        await update.message.reply_text("\n".join(lines))
 
     async def raw_queue(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/raw_queue"):
@@ -1182,6 +1300,10 @@ class BotHandlers:
             logger.warning("Invalid integer argument for %s: %s", usage, args[0])
             return None
 
+    def _parse_query_text(self, args: list[str]) -> str | None:
+        query = " ".join(args).strip()
+        return query or None
+
     def _actor_id(self, update: Update) -> str:
         user = update.effective_user
         return str(user.id) if user else "unknown"
@@ -1195,6 +1317,90 @@ class BotHandlers:
         if len(text) <= limit:
             return text
         return f"{text[: limit - 1]}…"
+
+    def _format_search_hint(self, search_result: dict) -> str:
+        field_labels = {
+            "case_id": "case_id",
+            "shk": "ШК",
+            "tare_transfer": "таре/передаче",
+            "item_name": "наименованию",
+        }
+        type_labels = {
+            "exact": "точное",
+            "normalized_exact": "нормализованное",
+            "partial": "частичное",
+        }
+        match_field = search_result.get("match_field")
+        match_type = search_result.get("match_type")
+        if not match_field or not match_type:
+            return "Совпадений нет."
+        return (
+            f"Совпадение: {type_labels.get(match_type, match_type)} по "
+            f"{field_labels.get(match_field, match_field)}."
+        )
+
+    def _format_case_identity(self, case_row: dict) -> str:
+        shk = self._short_text(case_row.get("shk"), 18)
+        tare_transfer = self._short_text(case_row.get("tare_transfer"), 18)
+        if shk != "—" and tare_transfer != "—":
+            return f"{shk} / {tare_transfer}"
+        return shk if shk != "—" else tare_transfer
+
+    def _format_case_card(self, case_row: dict) -> str:
+        source_parts = []
+        if case_row.get("source_sheet_name"):
+            source_parts.append(str(case_row["source_sheet_name"]))
+        if case_row.get("sheet_row_number"):
+            source_parts.append(f"row {case_row['sheet_row_number']}")
+
+        lines = [
+            f"Кейс {case_row['case_id']}",
+            f"Дата разбора: {self._display_value(case_row.get('review_date'))}",
+            f"Аналитик: {self._display_value(case_row.get('analyst'))}",
+            f"Наименование: {self._short_text(case_row.get('item_name'), 120)}",
+            f"ID виновного: {self._display_value(case_row.get('culprit_id'))}",
+            f"Комментарий: {self._short_text(case_row.get('comment_text'), 120)}",
+            f"Что предпринято: {self._short_text(case_row.get('action_taken'), 120)}",
+            f"Движение товара: {self._short_text(case_row.get('movement_status'), 60)}",
+            f"ШК: {self._display_value(case_row.get('shk'))}",
+            f"Тара/передача: {self._display_value(case_row.get('tare_transfer'))}",
+            f"Склад: {self._display_value(case_row.get('warehouse'))}",
+            f"Лист/строка: {self._display_value(' / '.join(source_parts) if source_parts else None)}",
+            f"Синхронизация: {self._display_value(case_row.get('last_synced_at'))}",
+            f"Raw: /case_raw {case_row['case_id']}",
+        ]
+        return "\n".join(lines)
+
+    def _format_case_list_line(self, case_row: dict) -> str:
+        return (
+            f"{case_row['case_id']} | "
+            f"{self._display_value(case_row.get('review_date'))} | "
+            f"{self._short_text(case_row.get('analyst'), 20)} | "
+            f"{self._short_text(case_row.get('item_name'), 32)} | "
+            f"{self._format_case_identity(case_row)}"
+        )
+
+    def _format_case_raw_line(self, raw_row: dict) -> str:
+        return (
+            f"#{raw_row['id']} [{self._display_value(raw_row.get('source_kind'))}] "
+            f"ШК:{self._short_text(raw_row.get('shk'), 16)} | "
+            f"тара:{self._short_text(raw_row.get('tare_transfer'), 16)} | "
+            f"{self._short_text(raw_row.get('item_name'), 26)} | "
+            f"{self._display_value(raw_row.get('match_method'))}/"
+            f"{self._display_value(raw_row.get('match_confidence'))} | "
+            f"{self._display_value(raw_row.get('review_status'))}"
+        )
+
+    def _format_raw_search_line(self, raw_row: dict) -> str:
+        return (
+            f"#{raw_row['id']} [{self._display_value(raw_row.get('source_kind'))}] "
+            f"ШК:{self._short_text(raw_row.get('shk'), 14)} | "
+            f"тара:{self._short_text(raw_row.get('tare_transfer'), 14)} | "
+            f"{self._short_text(raw_row.get('item_name'), 24)} | "
+            f"case:{self._display_value(raw_row.get('matched_case_id'))} | "
+            f"{self._display_value(raw_row.get('review_status'))} | "
+            f"conf:{self._display_value(raw_row.get('match_confidence'))}"
+        )
 
     def _format_raw_source(self, raw_row: dict) -> str:
         parts = []
