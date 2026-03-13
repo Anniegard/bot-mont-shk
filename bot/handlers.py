@@ -44,6 +44,11 @@ from bot.services.file_sources import (
     maybe_extract_zip,
 )
 from bot.services.yadisk import YaDiskError, yadisk_download_file, yadisk_list_latest
+from bot.services.yadisk_ingest import (
+    SOURCE_KIND_24H,
+    SOURCE_KIND_NO_MOVE,
+    ingest_yadisk_rows,
+)
 from bot.services.sheets import update_tables
 
 logger = logging.getLogger(__name__)
@@ -354,6 +359,7 @@ class BotHandlers:
                 "size": size or result.get("size"),
                 "source": "yadisk",
                 "modified": modified,
+                "source_path": f"{path}|modified:{modified}" if modified else path,
             }
 
             await update.message.reply_text("Файл скачан, обрабатываю…")
@@ -476,6 +482,7 @@ class BotHandlers:
                     "filename": original_name,
                     "size": document.file_size,
                     "source": "telegram_document",
+                    "source_path": f"telegram:{document.file_unique_id or document.file_id}",
                 }
                 await self._process_excel_file(
                     expected, update, context, excel_path, file_info
@@ -523,6 +530,8 @@ class BotHandlers:
                 "filename": Path(excel_path).name,
                 "size": size,
                 "source": f"{source_type}_link",
+                "source_path": url,
+                "source_url": url,
             }
             logger.info(
                 "Файл по ссылке скачан user_id=%s source=%s url=%s size=%s duration=%.3fs mode=%s",
@@ -578,6 +587,40 @@ class BotHandlers:
         else:
             await update.message.reply_text("Неизвестный режим. Выберите кнопку снизу.")
 
+    def _run_raw_yadisk_ingest(
+        self,
+        *,
+        file_path: str,
+        file_info: dict,
+        source_kind: str,
+    ) -> dict | None:
+        try:
+            summary = ingest_yadisk_rows(
+                file_path=file_path,
+                source_kind=source_kind,
+                file_info=file_info,
+                db_path=self.config.db_path,
+            )
+            logger.info(
+                "Raw ingest complete: kind=%s source=%s path=%s rows_read=%s rows_written=%s rows_linked=%s import_id=%s",
+                source_kind,
+                file_info.get("source"),
+                summary.get("source_path"),
+                summary.get("rows_read"),
+                summary.get("rows_written"),
+                summary.get("rows_linked"),
+                summary.get("import_id"),
+            )
+            return summary
+        except Exception:
+            logger.exception(
+                "Raw ingest failed: kind=%s source=%s filename=%s",
+                source_kind,
+                file_info.get("source"),
+                file_info.get("filename"),
+            )
+            return None
+
     async def _handle_no_move_file(
         self,
         update: Update,
@@ -594,6 +637,11 @@ class BotHandlers:
             start_ts = time.perf_counter()
             try:
                 rows, unknown_summary, stats = process_file(file_path, export_mode)
+                self._run_raw_yadisk_ingest(
+                    file_path=file_path,
+                    file_info=file_info,
+                    source_kind=SOURCE_KIND_NO_MOVE,
+                )
 
                 processing_duration = time.perf_counter() - start_ts
                 product_ids = stats.get("product_ids", set())
@@ -692,6 +740,11 @@ class BotHandlers:
             start_ts = time.perf_counter()
             try:
                 snapshot, meta = process_24h_file(file_path, block_ids)
+                self._run_raw_yadisk_ingest(
+                    file_path=file_path,
+                    file_info=file_info,
+                    source_kind=SOURCE_KIND_24H,
+                )
                 save_snapshot(
                     snapshot, meta, self.snapshot_path, self.snapshot_meta_path
                 )

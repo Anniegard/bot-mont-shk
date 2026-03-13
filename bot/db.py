@@ -132,6 +132,15 @@ CASES_STAGE2_COLUMNS = {
     "last_synced_at": "TEXT",
 }
 
+RAW_YADISK_STAGE3_COLUMNS = {
+    "source_kind": "TEXT",
+    "source_sheet_name": "TEXT",
+    "source_row_number": "INTEGER",
+    "normalized_json": "TEXT",
+    "linked_at": "TEXT",
+    "link_decision_reason": "TEXT",
+}
+
 INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_case_versions_case_id ON case_versions(case_id)",
     "CREATE INDEX IF NOT EXISTS idx_case_versions_row_hash ON case_versions(row_hash)",
@@ -159,6 +168,18 @@ INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_raw_yadisk_rows_tare_transfer ON raw_yadisk_rows(tare_transfer)",
     "CREATE INDEX IF NOT EXISTS idx_raw_yadisk_rows_item_name ON raw_yadisk_rows(item_name)",
     "CREATE INDEX IF NOT EXISTS idx_raw_yadisk_rows_matched_case_id ON raw_yadisk_rows(matched_case_id)",
+    "CREATE INDEX IF NOT EXISTS idx_raw_yadisk_rows_import_batch_id ON raw_yadisk_rows(import_batch_id)",
+    "CREATE INDEX IF NOT EXISTS idx_raw_yadisk_rows_source_kind ON raw_yadisk_rows(source_kind)",
+    "CREATE INDEX IF NOT EXISTS idx_raw_yadisk_rows_source_row_number ON raw_yadisk_rows(source_row_number)",
+    (
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_yadisk_rows_source_dedupe "
+        "ON raw_yadisk_rows("
+        "ifnull(source_path, ifnull(source_file_name, '')), "
+        "ifnull(source_kind, ''), "
+        "ifnull(source_sheet_name, ''), "
+        "row_hash"
+        ")"
+    ),
 )
 
 _CASE_TEXT_COLUMNS = {
@@ -179,6 +200,8 @@ _CASE_TEXT_COLUMNS = {
     "source_row_hash",
     "last_synced_at",
 }
+
+_RAW_YADISK_SOURCE_ID_SQL = "ifnull(source_path, ifnull(source_file_name, ''))"
 
 
 def resolve_db_path(db_path: str | Path | None = None) -> Path:
@@ -274,6 +297,7 @@ def _ensure_columns(
 
 
 def _dedupe_existing_rows(conn: sqlite3.Connection) -> None:
+    raw_yadisk_columns = _get_table_columns(conn, "raw_yadisk_rows")
     conn.execute("""
         DELETE FROM case_versions
         WHERE id NOT IN (
@@ -303,6 +327,19 @@ def _dedupe_existing_rows(conn: sqlite3.Connection) -> None:
             GROUP BY sheet_name, row_number, row_hash
         )
         """)
+    if {"source_kind", "source_sheet_name"}.issubset(raw_yadisk_columns):
+        conn.execute(f"""
+            DELETE FROM raw_yadisk_rows
+            WHERE id NOT IN (
+                SELECT MAX(id)
+                FROM raw_yadisk_rows
+                GROUP BY
+                    {_RAW_YADISK_SOURCE_ID_SQL},
+                    ifnull(source_kind, ''),
+                    ifnull(source_sheet_name, ''),
+                    row_hash
+            )
+            """)
     conn.execute("UPDATE raw_sheet_rows SET is_latest = 0")
     conn.execute("""
         UPDATE raw_sheet_rows
@@ -320,15 +357,40 @@ def _apply_stage2_migrations(conn: sqlite3.Connection) -> None:
     _dedupe_existing_rows(conn)
 
 
+def _apply_stage3_migrations(conn: sqlite3.Connection) -> None:
+    _ensure_columns(conn, "raw_yadisk_rows", RAW_YADISK_STAGE3_COLUMNS)
+    _dedupe_existing_rows(conn)
+
+
 def init_db(db_path: str | Path | None = None) -> Path:
     resolved_path = resolve_db_path(db_path)
     with _managed_connection(db_path=resolved_path) as conn:
         for statement in SCHEMA_STATEMENTS:
             conn.execute(statement)
         _apply_stage2_migrations(conn)
+        _apply_stage3_migrations(conn)
         for statement in INDEX_STATEMENTS:
             conn.execute(statement)
     return resolved_path
+
+
+def start_import(
+    source_type: str,
+    source_name: str | None = None,
+    source_path: str | None = None,
+    sheet_name: str | None = None,
+    connection: sqlite3.Connection | None = None,
+    db_path: str | Path | None = None,
+) -> int:
+    return insert_import(
+        source_type=source_type,
+        source_name=source_name,
+        source_path=source_path,
+        sheet_name=sheet_name,
+        status="running",
+        connection=connection,
+        db_path=db_path,
+    )
 
 
 def insert_import(
@@ -427,6 +489,19 @@ def _normalize_case_field_value(column_name: str, value: Any) -> Any:
         if value is None:
             return None
         return float(value)
+    return value
+
+
+def _normalize_match_label(value: Any) -> Any:
+    if value is None:
+        return None
+    if isinstance(value, float) and math.isnan(value):
+        return None
+    if isinstance(value, str):
+        stripped = value.strip()
+        if stripped.lower() in {"", "null", "nan"}:
+            return None
+        return stripped
     return value
 
 
@@ -857,6 +932,9 @@ def insert_raw_yadisk_row(
     import_batch_id: int | None = None,
     source_file_name: str | None = None,
     source_path: str | None = None,
+    source_kind: str | None = None,
+    source_sheet_name: str | None = None,
+    source_row_number: int | None = None,
     shk: str | None = None,
     tare_transfer: str | None = None,
     item_name: str | None = None,
@@ -868,6 +946,9 @@ def insert_raw_yadisk_row(
     matched_case_id: str | None = None,
     match_method: str | None = None,
     match_confidence: str | None = None,
+    normalized_json: Any = None,
+    linked_at: str | None = None,
+    link_decision_reason: str | None = None,
     imported_at: str | None = None,
     connection: sqlite3.Connection | None = None,
     db_path: str | Path | None = None,
@@ -883,6 +964,9 @@ def insert_raw_yadisk_row(
                 import_batch_id,
                 source_file_name,
                 source_path,
+                source_kind,
+                source_sheet_name,
+                source_row_number,
                 row_hash,
                 shk,
                 tare_transfer,
@@ -895,29 +979,306 @@ def insert_raw_yadisk_row(
                 matched_case_id,
                 match_method,
                 match_confidence,
+                normalized_json,
+                linked_at,
+                link_decision_reason,
                 imported_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 import_batch_id,
                 normalize_empty_value(source_file_name),
                 normalize_empty_value(source_path),
+                normalize_empty_value(source_kind),
+                normalize_empty_value(source_sheet_name),
+                None if source_row_number is None else int(source_row_number),
                 normalized_row_hash,
                 normalize_empty_value(shk),
                 normalize_empty_value(tare_transfer),
                 normalize_empty_value(item_name),
-                amount,
-                qty_shk,
+                None if amount is None else float(amount),
+                None if qty_shk is None else int(qty_shk),
                 normalize_empty_value(last_movement_at),
                 normalize_empty_value(writeoff_started_at),
                 normalize_empty_value(example_related_shk),
                 normalize_empty_value(matched_case_id),
-                normalize_empty_value(match_method),
-                normalize_empty_value(match_confidence),
+                _normalize_match_label(match_method),
+                _normalize_match_label(match_confidence),
+                serialize_json(normalized_json),
+                normalize_empty_value(linked_at),
+                normalize_empty_value(link_decision_reason),
                 imported_at or utc_now_iso(),
             ),
         )
         return int(cursor.lastrowid)
+
+
+def get_existing_raw_yadisk_row(
+    row_hash: str,
+    source_path: str | None = None,
+    source_file_name: str | None = None,
+    source_kind: str | None = None,
+    source_sheet_name: str | None = None,
+    connection: sqlite3.Connection | None = None,
+    db_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    normalized_row_hash = normalize_empty_value(row_hash)
+    if not normalized_row_hash:
+        raise ValueError("row_hash is required")
+
+    with _managed_connection(connection, db_path) as conn:
+        row = conn.execute(
+            f"""
+            SELECT *
+            FROM raw_yadisk_rows
+            WHERE row_hash = ?
+              AND {_RAW_YADISK_SOURCE_ID_SQL} = ifnull(?, ifnull(?, ''))
+              AND ifnull(source_kind, '') = ifnull(?, '')
+              AND ifnull(source_sheet_name, '') = ifnull(?, '')
+            ORDER BY id DESC
+            LIMIT 1
+            """,
+            (
+                normalized_row_hash,
+                normalize_empty_value(source_path),
+                normalize_empty_value(source_file_name),
+                normalize_empty_value(source_kind),
+                normalize_empty_value(source_sheet_name),
+            ),
+        ).fetchone()
+        return dict(row) if row else None
+
+
+def insert_raw_yadisk_row_if_new(
+    row_hash: str,
+    import_batch_id: int | None = None,
+    source_file_name: str | None = None,
+    source_path: str | None = None,
+    source_kind: str | None = None,
+    source_sheet_name: str | None = None,
+    source_row_number: int | None = None,
+    shk: str | None = None,
+    tare_transfer: str | None = None,
+    item_name: str | None = None,
+    amount: float | int | None = None,
+    qty_shk: int | None = None,
+    last_movement_at: str | None = None,
+    writeoff_started_at: str | None = None,
+    example_related_shk: str | None = None,
+    matched_case_id: str | None = None,
+    match_method: str | None = None,
+    match_confidence: str | None = None,
+    normalized_json: Any = None,
+    linked_at: str | None = None,
+    link_decision_reason: str | None = None,
+    imported_at: str | None = None,
+    connection: sqlite3.Connection | None = None,
+    db_path: str | Path | None = None,
+) -> int | None:
+    normalized_row_hash = normalize_empty_value(row_hash)
+    if not normalized_row_hash:
+        raise ValueError("row_hash is required")
+
+    with _managed_connection(connection, db_path) as conn:
+        existing = get_existing_raw_yadisk_row(
+            row_hash=normalized_row_hash,
+            source_path=source_path,
+            source_file_name=source_file_name,
+            source_kind=source_kind,
+            source_sheet_name=source_sheet_name,
+            connection=conn,
+        )
+        if existing:
+            return None
+        return insert_raw_yadisk_row(
+            row_hash=normalized_row_hash,
+            import_batch_id=import_batch_id,
+            source_file_name=source_file_name,
+            source_path=source_path,
+            source_kind=source_kind,
+            source_sheet_name=source_sheet_name,
+            source_row_number=source_row_number,
+            shk=shk,
+            tare_transfer=tare_transfer,
+            item_name=item_name,
+            amount=amount,
+            qty_shk=qty_shk,
+            last_movement_at=last_movement_at,
+            writeoff_started_at=writeoff_started_at,
+            example_related_shk=example_related_shk,
+            matched_case_id=matched_case_id,
+            match_method=match_method,
+            match_confidence=match_confidence,
+            normalized_json=normalized_json,
+            linked_at=linked_at,
+            link_decision_reason=link_decision_reason,
+            imported_at=imported_at,
+            connection=conn,
+        )
+
+
+def update_raw_yadisk_match(
+    raw_row_id: int,
+    matched_case_id: str | None = None,
+    match_method: str | None = None,
+    match_confidence: str | None = None,
+    linked_at: str | None = None,
+    link_decision_reason: str | None = None,
+    connection: sqlite3.Connection | None = None,
+    db_path: str | Path | None = None,
+) -> bool:
+    with _managed_connection(connection, db_path) as conn:
+        existing = conn.execute(
+            "SELECT * FROM raw_yadisk_rows WHERE id = ? LIMIT 1",
+            (int(raw_row_id),),
+        ).fetchone()
+        if existing is None:
+            return False
+
+        updates: dict[str, Any] = {}
+        normalized_matched_case_id = normalize_empty_value(matched_case_id)
+        normalized_match_method = _normalize_match_label(match_method)
+        normalized_match_confidence = _normalize_match_label(match_confidence)
+        normalized_linked_at = normalize_empty_value(linked_at)
+        normalized_reason = normalize_empty_value(link_decision_reason)
+
+        if existing["matched_case_id"] != normalized_matched_case_id:
+            updates["matched_case_id"] = normalized_matched_case_id
+        if existing["match_method"] != normalized_match_method:
+            updates["match_method"] = normalized_match_method
+        if existing["match_confidence"] != normalized_match_confidence:
+            updates["match_confidence"] = normalized_match_confidence
+        if existing["linked_at"] != normalized_linked_at:
+            updates["linked_at"] = normalized_linked_at
+        if existing["link_decision_reason"] != normalized_reason:
+            updates["link_decision_reason"] = normalized_reason
+
+        if not updates:
+            return False
+
+        assignments = ", ".join(f"{column_name} = ?" for column_name in updates)
+        conn.execute(
+            f"UPDATE raw_yadisk_rows SET {assignments} WHERE id = ?",
+            [*updates.values(), int(raw_row_id)],
+        )
+        return True
+
+
+def _find_cases_by_field(
+    *,
+    field_name: str,
+    value: str,
+    case_expression: str,
+    item_expression: str,
+    limit: int,
+    connection: sqlite3.Connection | None = None,
+    db_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    normalized_value = normalize_empty_value(value)
+    if not normalized_value:
+        return []
+
+    with _managed_connection(connection, db_path) as conn:
+        rows = conn.execute(
+            f"""
+            SELECT
+                c.case_id,
+                c.source_sheet_name,
+                c.sheet_row_number,
+                c.is_active,
+                c.created_at,
+                c.updated_at,
+                c.shk,
+                c.tare_transfer,
+                c.item_name,
+                c.amount,
+                c.qty_shk,
+                c.last_movement_at,
+                c.writeoff_started_at,
+                c.example_related_shk
+            FROM cases AS c
+            WHERE c.is_active = 1
+              AND (
+                {case_expression}
+                OR EXISTS(
+                    SELECT 1
+                    FROM case_items AS ci
+                    WHERE ci.case_id = c.case_id
+                      AND {item_expression}
+                )
+              )
+            ORDER BY c.updated_at DESC, c.case_id ASC
+            LIMIT ?
+            """,
+            (normalized_value, normalized_value, max(limit, 1)),
+        ).fetchall()
+
+    results: list[dict[str, Any]] = []
+    for row in rows:
+        row_dict = dict(row)
+        row_dict["match_method"] = field_name
+        results.append(row_dict)
+    return results
+
+
+def find_case_candidates_by_shk(
+    shk: str | None,
+    limit: int = 20,
+    connection: sqlite3.Connection | None = None,
+    db_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    normalized_shk = normalize_empty_value(shk)
+    if not normalized_shk:
+        return []
+    return _find_cases_by_field(
+        field_name="shk",
+        value=normalized_shk,
+        case_expression="trim(c.shk) = ?",
+        item_expression="trim(ci.shk) = ?",
+        limit=limit,
+        connection=connection,
+        db_path=db_path,
+    )
+
+
+def find_case_candidates_by_tare_transfer(
+    tare_transfer: str | None,
+    limit: int = 20,
+    connection: sqlite3.Connection | None = None,
+    db_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    normalized_tare_transfer = normalize_empty_value(tare_transfer)
+    if not normalized_tare_transfer:
+        return []
+    return _find_cases_by_field(
+        field_name="tare_transfer",
+        value=normalized_tare_transfer,
+        case_expression="trim(c.tare_transfer) = ?",
+        item_expression="trim(ci.tare_transfer) = ?",
+        limit=limit,
+        connection=connection,
+        db_path=db_path,
+    )
+
+
+def find_case_candidates_by_item_name(
+    item_name: str | None,
+    limit: int = 20,
+    connection: sqlite3.Connection | None = None,
+    db_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    normalized_item_name = normalize_empty_value(item_name)
+    if not normalized_item_name:
+        return []
+    return _find_cases_by_field(
+        field_name="item_name",
+        value=normalized_item_name,
+        case_expression="lower(trim(c.item_name)) = lower(?)",
+        item_expression="lower(trim(ci.item_name)) = lower(?)",
+        limit=limit,
+        connection=connection,
+        db_path=db_path,
+    )
 
 
 def upsert_sheet_sync_state(
@@ -980,78 +1341,44 @@ def find_case_candidates(
     connection: sqlite3.Connection | None = None,
     db_path: str | Path | None = None,
 ) -> list[dict[str, Any]]:
-    lookups = (
-        ("shk", normalize_empty_value(shk), "high"),
-        ("tare_transfer", normalize_empty_value(tare_transfer), "medium"),
-        ("item_name", normalize_empty_value(item_name), "low"),
-    )
     results: list[dict[str, Any]] = []
     seen_case_ids: set[str] = set()
+    lookups = (
+        ("shk", find_case_candidates_by_shk(shk, limit=limit, connection=connection, db_path=db_path), "high"),
+        (
+            "tare_transfer",
+            find_case_candidates_by_tare_transfer(
+                tare_transfer,
+                limit=limit,
+                connection=connection,
+                db_path=db_path,
+            ),
+            "medium",
+        ),
+        (
+            "item_name",
+            find_case_candidates_by_item_name(
+                item_name,
+                limit=limit,
+                connection=connection,
+                db_path=db_path,
+            ),
+            "low",
+        ),
+    )
 
-    with _managed_connection(connection, db_path) as conn:
-        for field_name, value, confidence in lookups:
-            if not value or len(results) >= limit:
+    for field_name, candidates, confidence in lookups:
+        if len(results) >= limit:
+            break
+        for row_dict in candidates:
+            case_id_value = row_dict["case_id"]
+            if case_id_value in seen_case_ids:
                 continue
-
-            if field_name == "item_name":
-                query = """
-                    SELECT
-                        c.case_id,
-                        c.source_sheet_name,
-                        c.sheet_row_number,
-                        c.is_active,
-                        c.created_at,
-                        c.updated_at,
-                        ci.id AS case_item_id,
-                        ci.shk,
-                        ci.tare_transfer,
-                        ci.item_name,
-                        ci.amount,
-                        ci.qty_shk,
-                        ci.last_movement_at,
-                        ci.writeoff_started_at,
-                        ci.example_related_shk
-                    FROM case_items AS ci
-                    INNER JOIN cases AS c ON c.case_id = ci.case_id
-                    WHERE c.is_active = 1 AND lower(trim(ci.item_name)) = lower(?)
-                    ORDER BY c.updated_at DESC, ci.id DESC
-                    LIMIT ?
-                """
-            else:
-                query = f"""
-                    SELECT
-                        c.case_id,
-                        c.source_sheet_name,
-                        c.sheet_row_number,
-                        c.is_active,
-                        c.created_at,
-                        c.updated_at,
-                        ci.id AS case_item_id,
-                        ci.shk,
-                        ci.tare_transfer,
-                        ci.item_name,
-                        ci.amount,
-                        ci.qty_shk,
-                        ci.last_movement_at,
-                        ci.writeoff_started_at,
-                        ci.example_related_shk
-                    FROM case_items AS ci
-                    INNER JOIN cases AS c ON c.case_id = ci.case_id
-                    WHERE c.is_active = 1 AND trim(ci.{field_name}) = ?
-                    ORDER BY c.updated_at DESC, ci.id DESC
-                    LIMIT ?
-                """
-
-            for row in conn.execute(query, (value, max(limit, 1))).fetchall():
-                row_dict = dict(row)
-                case_id_value = row_dict["case_id"]
-                if case_id_value in seen_case_ids:
-                    continue
-                row_dict["match_method"] = field_name
-                row_dict["match_confidence"] = confidence
-                results.append(row_dict)
-                seen_case_ids.add(case_id_value)
-                if len(results) >= limit:
-                    break
+            row_dict["match_method"] = field_name
+            row_dict["match_confidence"] = confidence
+            results.append(row_dict)
+            seen_case_ids.add(case_id_value)
+            if len(results) >= limit:
+                break
 
     return results
