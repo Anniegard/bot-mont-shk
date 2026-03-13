@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import gspread
+
 from bot.constants import CASE_ID_COLUMN_NAME
 from bot.db import (
     calculate_row_hash,
@@ -9,6 +11,7 @@ from bot.db import (
 )
 from bot.services import case_sync
 from bot.services.case_sync import REQUIRED_FIELD_LABELS, read_master_sheet_rows
+from bot.services.sheets import update_tables
 from bot.services.yadisk_ingest import match_raw_row_to_case
 
 
@@ -25,12 +28,22 @@ class FakeWorksheet:
         self.batch_update_calls: list[list[dict[str, object]]] = []
         self.update_cell_calls: list[tuple[int, int, str]] = []
         self.add_cols_calls: list[int] = []
+        self.batch_clear_calls: list[list[str]] = []
+        self.merge_cells_calls: list[str] = []
 
     def row_values(self, row_number: int) -> list[str]:
         return list(self._values[row_number - 1])
 
     def get_all_values(self) -> list[list[str]]:
         return [list(row) for row in self._values]
+
+    def col_values(self, column_number: int) -> list[str]:
+        values: list[str] = []
+        for row in self._values:
+            index = column_number - 1
+            if index < len(row):
+                values.append(row[index])
+        return values
 
     def add_cols(self, columns: int) -> None:
         self.add_cols_calls.append(columns)
@@ -41,6 +54,38 @@ class FakeWorksheet:
 
     def batch_update(self, updates: list[dict[str, object]]) -> None:
         self.batch_update_calls.append(updates)
+
+    def batch_clear(self, ranges: list[str]) -> None:
+        self.batch_clear_calls.append(ranges)
+
+    def merge_cells(self, cell_range: str) -> None:
+        self.merge_cells_calls.append(cell_range)
+
+
+class FakeSpreadsheet:
+    def __init__(self, worksheets: list[FakeWorksheet]):
+        self.sheet1 = worksheets[0]
+        self._worksheets = {worksheet.title: worksheet for worksheet in worksheets}
+        self.add_worksheet_calls: list[tuple[str, int, int]] = []
+
+    def worksheet(self, name: str) -> FakeWorksheet:
+        if name not in self._worksheets:
+            raise gspread.WorksheetNotFound(name)
+        return self._worksheets[name]
+
+    def add_worksheet(self, title: str, rows: int, cols: int) -> FakeWorksheet:
+        worksheet = FakeWorksheet([[]], title=title, col_count=cols)
+        self._worksheets[title] = worksheet
+        self.add_worksheet_calls.append((title, rows, cols))
+        return worksheet
+
+
+class FakeClient:
+    def __init__(self, spreadsheet: FakeSpreadsheet):
+        self._spreadsheet = spreadsheet
+
+    def open_by_key(self, spreadsheet_id: str) -> FakeSpreadsheet:
+        return self._spreadsheet
 
 
 def test_case_versions_dedupe_for_same_case_and_row_hash(connection, seed_case) -> None:
@@ -215,3 +260,54 @@ def test_existing_case_id_is_preserved_without_regeneration(monkeypatch) -> None
     assert worksheet.batch_update_calls == []
     assert worksheet.update_cell_calls == []
     assert worksheet.add_cols_calls == []
+
+
+def test_update_tables_routes_exports_to_dedicated_tabs_and_creates_missing_tabs() -> None:
+    master = FakeWorksheet([[]], title="Разбор потерь исх. потока", col_count=16)
+    spreadsheet = FakeSpreadsheet([master])
+    client = FakeClient(spreadsheet)
+
+    update_tables(
+        client=client,
+        spreadsheet_id="spreadsheet-id",
+        left_rows=[["гофра", "sku-1", "1", "2500"]],
+        right_rows=[["тара-1", "sku-1", "1", "2500", "2026-03-14 10:00"]],
+        right_meta={"uploaded_at": "2026-03-14T07:00:00+00:00"},
+    )
+
+    assert spreadsheet.add_worksheet_calls == [
+        ("Выгрузка без движения", 1000, 16),
+        ("Выгрузка 24ч", 1000, 16),
+    ]
+
+    no_move_sheet = spreadsheet.worksheet("Выгрузка без движения")
+    export_24h_sheet = spreadsheet.worksheet("Выгрузка 24ч")
+
+    no_move_ranges = [entry["range"] for entry in no_move_sheet.batch_update_calls[0]]
+    export_24h_ranges = [
+        entry["range"] for entry in export_24h_sheet.batch_update_calls[0]
+    ]
+
+    assert no_move_ranges == ["B2:E2", "B3:E3", "B5:E5"]
+    assert export_24h_ranges == ["K2:O2", "K3:O3", "P2", "P3", "K5:O5"]
+    assert master.batch_update_calls == []
+    assert master.batch_clear_calls == []
+
+
+def test_update_tables_right_only_does_not_touch_no_move_tab() -> None:
+    master = FakeWorksheet([[]], title="Разбор потерь исх. потока", col_count=16)
+    spreadsheet = FakeSpreadsheet([master])
+    client = FakeClient(spreadsheet)
+
+    update_tables(
+        client=client,
+        spreadsheet_id="spreadsheet-id",
+        left_rows=[],
+        right_rows=[["тара-1", "sku-1", "1", "2500", "2026-03-14 10:00"]],
+        right_meta={"uploaded_at": "2026-03-14T07:00:00+00:00"},
+        skip_left=True,
+        skip_right=False,
+    )
+
+    assert spreadsheet.add_worksheet_calls == [("Выгрузка 24ч", 1000, 16)]
+    assert master.batch_update_calls == []

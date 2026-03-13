@@ -1020,7 +1020,6 @@ class BotHandlers:
                 update_tables(
                     self.gc,
                     self.config.spreadsheet_id,
-                    self.config.worksheet_name,
                     rows,
                     right_rows,
                     meta,
@@ -1120,7 +1119,6 @@ class BotHandlers:
                 update_tables(
                     self.gc,
                     self.config.spreadsheet_id,
-                    self.config.worksheet_name,
                     left_rows=[],
                     right_rows=right_rows,
                     right_meta=meta.__dict__,

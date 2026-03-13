@@ -8,7 +8,7 @@ from uuid import uuid4
 import gspread
 from gspread.utils import rowcol_to_a1
 
-from bot.constants import CASE_ID_COLUMN_NAME, MASTER_CASES_SHEET_NAME
+from bot.constants import CASE_ID_COLUMN_NAME, CASES_MASTER_SHEET_NAME
 from bot.db import (
     calculate_row_hash,
     finish_import,
@@ -303,7 +303,7 @@ def compute_sheet_hash(rows: list[dict[str, Any]]) -> str:
 def read_master_sheet_rows(
     client: gspread.Client,
     spreadsheet_id: str,
-    sheet_name: str = MASTER_CASES_SHEET_NAME,
+    sheet_name: str = CASES_MASTER_SHEET_NAME,
 ) -> dict[str, Any]:
     worksheet = get_worksheet(client, spreadsheet_id, sheet_name)
     existing_headers = worksheet.row_values(1)
@@ -461,7 +461,7 @@ def sync_cases_from_master_sheet(
     client: gspread.Client,
     spreadsheet_id: str,
     db_path,
-    sheet_name: str = MASTER_CASES_SHEET_NAME,
+    sheet_name: str = CASES_MASTER_SHEET_NAME,
 ) -> dict[str, Any]:
     conn = get_db_connection(db_path)
     import_id: int | None = None
