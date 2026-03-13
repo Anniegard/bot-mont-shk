@@ -17,4 +17,6 @@ jobs:
       - run: pip install -r requirements-dev.txt
       - run: python -m compileall .
       - run: ruff check . --select F,E9
-      - run: pytest
+      - run: python -m pytest
+        env:
+          PYTHONPATH: .
