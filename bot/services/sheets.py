@@ -78,7 +78,7 @@ def parse_sheet_rows(values: list[list[Any]]) -> list[dict[str, Any]]:
 def read_sheet_rows(
     client: gspread.Client, spreadsheet_id: str, worksheet_name: Optional[str]
 ) -> list[dict[str, Any]]:
-    worksheet = _get_worksheet(client, spreadsheet_id, worksheet_name)
+    worksheet = get_worksheet(client, spreadsheet_id, worksheet_name)
     values = worksheet.get_all_values()
     return parse_sheet_rows(values)
 
@@ -88,7 +88,7 @@ def authorize_client(credentials_path: Path) -> gspread.Client:
     return gspread.authorize(creds)
 
 
-def _get_worksheet(
+def get_worksheet(
     client: gspread.Client, spreadsheet_id: str, worksheet_name: Optional[str]
 ):
     spreadsheet = client.open_by_key(spreadsheet_id)
@@ -98,6 +98,12 @@ def _get_worksheet(
         except gspread.WorksheetNotFound:
             return spreadsheet.sheet1
     return spreadsheet.sheet1
+
+
+def _get_worksheet(
+    client: gspread.Client, spreadsheet_id: str, worksheet_name: Optional[str]
+):
+    return get_worksheet(client, spreadsheet_id, worksheet_name)
 
 
 def _format_meta_uploaded_at(meta: Optional[dict]) -> str:
@@ -126,7 +132,7 @@ def update_tables(
     skip_left: bool = False,
     skip_right: bool = False,
 ) -> None:
-    worksheet = _get_worksheet(client, spreadsheet_id, worksheet_name)
+    worksheet = get_worksheet(client, spreadsheet_id, worksheet_name)
 
     start_row = 5  # rows 1-4 reserved (headers + empty row 4)
 
