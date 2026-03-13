@@ -74,8 +74,25 @@ python main.py
 - При нажатии «☁️ Взять с Я.Диска…» бот берёт самый свежий Excel/zip из соответствующей папки.
 
 ## Линтеры и форматирование
-- Dev-зависимости: `black`, `ruff` в `requirements-dev.txt`.
-- CI (GitHub Actions): `ruff check .` и `black --check .`.
+- Dev-зависимости: `black`, `ruff`, `pytest` в `requirements-dev.txt`.
+- CI (GitHub Actions): `python -m compileall .`, `ruff check . --select F,E9` и `pytest`.
+
+## Тесты
+- Локальный запуск:
+```bash
+pip install -r requirements.txt
+pip install -r requirements-dev.txt
+pytest
+```
+- Покрыто минимальными regression-тестами:
+  - dedupe для `case_versions`, `raw_sheet_rows`, `raw_yadisk_rows`;
+  - приоритетный matching `shk -> tare_transfer -> item_name`;
+  - ambiguous matching без авто-линковки;
+  - сохранение существующего `case_id` без перегенерации.
+- Сознательно не покрыто на этом этапе:
+  - живые интеграции с Google Sheets и Yandex Disk;
+  - end-to-end обработка реальных Excel-файлов;
+  - Telegram handlers и сценарии с `.env`/секретами.
 
 ## Примечания
 - Пустые/невалидные прогнозы 24ч исключаются; группы без корректного прогноза не выводятся.
