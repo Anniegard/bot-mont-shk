@@ -16,6 +16,7 @@ class Config:
     db_path: Path
     worksheet_name: str | None = None
     admin_user_id: str | None = None
+    admin_user_ids: Tuple[str, ...] = ()
     yandex_oauth_token: str | None = None
     yandex_no_move_dir: str | None = None
     yandex_24h_dir: str | None = None
@@ -35,6 +36,26 @@ def _resolve_optional_path(path_value: str, root_dir: Path) -> Path:
     if not path.is_absolute():
         path = (root_dir / path_value).resolve()
     return path
+
+
+def parse_admin_user_ids(
+    bot_admin_ids: str | None = None,
+    legacy_admin_user_id: str | None = None,
+) -> Tuple[str, ...]:
+    values: list[str] = []
+    seen: set[str] = set()
+
+    for raw_value in (bot_admin_ids or "").split(","):
+        normalized = raw_value.strip()
+        if normalized and normalized not in seen:
+            values.append(normalized)
+            seen.add(normalized)
+
+    legacy_value = (legacy_admin_user_id or "").strip()
+    if legacy_value and legacy_value not in seen:
+        values.append(legacy_value)
+
+    return tuple(values)
 
 
 def load_config(env_path: str | None = None) -> Config:
@@ -66,6 +87,10 @@ def load_config(env_path: str | None = None) -> Config:
     db_path_value = os.getenv("BOT_DB_PATH") or "data/bot.db"
     worksheet_name = os.getenv("WORKSHEET_NAME")
     admin_user_id = os.getenv("ADMIN_USER_ID") or None
+    admin_user_ids = parse_admin_user_ids(
+        bot_admin_ids=os.getenv("BOT_ADMIN_IDS"),
+        legacy_admin_user_id=admin_user_id,
+    )
     yandex_oauth_token = os.getenv("YANDEX_OAUTH_TOKEN") or None
     yandex_no_move_dir = os.getenv("YANDEX_NO_MOVE_DIR") or "/BOT_UPLOADS/no_move/"
     yandex_24h_dir = os.getenv("YANDEX_24H_DIR") or "/BOT_UPLOADS/24h/"
@@ -102,6 +127,7 @@ def load_config(env_path: str | None = None) -> Config:
         db_path=db_path,
         worksheet_name=worksheet_name or None,
         admin_user_id=admin_user_id,
+        admin_user_ids=admin_user_ids,
         yandex_oauth_token=yandex_oauth_token,
         yandex_no_move_dir=yandex_no_move_dir,
         yandex_24h_dir=yandex_24h_dir,

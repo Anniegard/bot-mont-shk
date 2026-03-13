@@ -49,6 +49,14 @@ from bot.services.yadisk_ingest import (
     SOURCE_KIND_NO_MOVE,
     ingest_yadisk_rows,
 )
+from bot.services.raw_review import (
+    get_raw_row_details,
+    ignore_raw_row,
+    list_raw_row_candidates,
+    list_unresolved_raw_rows,
+    manual_link_raw_row,
+    mark_raw_row_pending,
+)
 from bot.services.sheets import update_tables
 
 logger = logging.getLogger(__name__)
@@ -128,6 +136,13 @@ class BotHandlers:
     def register(self, application: Application) -> None:
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("admin", self.admin))
+        application.add_handler(CommandHandler("raw_help", self.raw_help))
+        application.add_handler(CommandHandler("raw_queue", self.raw_queue))
+        application.add_handler(CommandHandler("raw_show", self.raw_show))
+        application.add_handler(CommandHandler("raw_candidates", self.raw_candidates))
+        application.add_handler(CommandHandler("raw_link", self.raw_link))
+        application.add_handler(CommandHandler("raw_ignore", self.raw_ignore))
+        application.add_handler(CommandHandler("raw_pending", self.raw_pending))
         application.add_handler(
             MessageHandler(
                 filters.Regex(f"^{re.escape(BUTTON_NO_MOVE)}$"), self.select_no_move
@@ -175,17 +190,7 @@ class BotHandlers:
         await update.message.reply_text(message, reply_markup=self.reply_keyboard)
 
     async def admin(self, update: Update, context: CallbackContext) -> None:
-        user = update.effective_user
-        if not self._is_admin(user.id):
-            logger.warning(
-                "Попытка доступа к /admin user_id=%s username=%s",
-                user.id,
-                user.username,
-            )
-            await update.message.reply_text(
-                "У вас нет прав для использования этой команды.",
-                reply_markup=self.reply_keyboard,
-            )
+        if not await self._ensure_admin_access(update, command_name="/admin"):
             return
 
         admin_keyboard = [
@@ -198,9 +203,193 @@ class BotHandlers:
             [InlineKeyboardButton("Остановить бота", callback_data="stop_bot")],
         ]
         await update.message.reply_text(
-            "Выберите действие:",
+            "Выберите действие.\nДля разбора raw-строк: /raw_help",
             reply_markup=InlineKeyboardMarkup(admin_keyboard),
         )
+
+    async def raw_help(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_admin_access(update, command_name="/raw_help"):
+            return
+        await update.message.reply_text(
+            "Команды разбора raw-строк:\n"
+            "/raw_queue [limit] [source_kind] - очередь неразобранных строк\n"
+            "/raw_show <raw_id> - детали raw-строки\n"
+            "/raw_candidates <raw_id> - безопасные кандидаты case_id\n"
+            "/raw_link <raw_id> <case_id> [note] - вручную привязать строку\n"
+            "/raw_ignore <raw_id> [note] - пометить как игнор\n"
+            "/raw_pending <raw_id> [note] - вернуть в pending"
+        )
+
+    async def raw_queue(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_admin_access(update, command_name="/raw_queue"):
+            return
+
+        limit, source_kind = self._parse_raw_queue_args(context.args)
+        rows = list_unresolved_raw_rows(
+            limit=limit,
+            source_kind=source_kind,
+            db_path=self.config.db_path,
+        )
+        if not rows:
+            await update.message.reply_text("Неразобранных raw-строк сейчас нет.")
+            return
+
+        lines = [
+            "Очередь raw-строк на разбор:",
+            *[self._format_raw_queue_line(row) for row in rows],
+        ]
+        await update.message.reply_text("\n".join(lines))
+
+    async def raw_show(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_admin_access(update, command_name="/raw_show"):
+            return
+
+        raw_row_id = self._parse_required_int_arg(context.args, "/raw_show <raw_id>")
+        if raw_row_id is None:
+            await update.message.reply_text("Использование: /raw_show <raw_id>")
+            return
+
+        raw_row = get_raw_row_details(raw_row_id, db_path=self.config.db_path)
+        if raw_row is None:
+            await update.message.reply_text(f"Raw-строка #{raw_row_id} не найдена.")
+            return
+
+        await update.message.reply_text(self._format_raw_details(raw_row))
+
+    async def raw_candidates(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_admin_access(update, command_name="/raw_candidates"):
+            return
+
+        raw_row_id = self._parse_required_int_arg(
+            context.args, "/raw_candidates <raw_id>"
+        )
+        if raw_row_id is None:
+            await update.message.reply_text("Использование: /raw_candidates <raw_id>")
+            return
+
+        try:
+            candidates = list_raw_row_candidates(
+                raw_row_id,
+                db_path=self.config.db_path,
+            )
+        except ValueError:
+            await update.message.reply_text(f"Raw-строка #{raw_row_id} не найдена.")
+            return
+
+        if not candidates:
+            await update.message.reply_text(
+                f"Для raw #{raw_row_id} безопасных кандидатов не найдено."
+            )
+            return
+
+        lines = [f"Кандидаты для raw #{raw_row_id}:"]
+        for candidate in candidates:
+            lines.append(
+                f"{candidate['case_id']} | {candidate['reason']} | "
+                f"SHK: {self._display_value(candidate.get('shk'))} | "
+                f"тара: {self._display_value(candidate.get('tare_transfer'))} | "
+                f"товар: {self._display_value(candidate.get('item_name'))}"
+            )
+        await update.message.reply_text("\n".join(lines))
+
+    async def raw_link(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_admin_access(update, command_name="/raw_link"):
+            return
+
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "Использование: /raw_link <raw_id> <case_id> [note]"
+            )
+            return
+
+        try:
+            raw_row_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("raw_id должен быть числом.")
+            return
+
+        case_id = context.args[1]
+        note = " ".join(context.args[2:]).strip() or None
+        try:
+            result = manual_link_raw_row(
+                raw_row_id=raw_row_id,
+                case_id=case_id,
+                actor_id=self._actor_id(update),
+                note=note,
+                db_path=self.config.db_path,
+            )
+        except ValueError as exc:
+            await update.message.reply_text(self._format_review_error(str(exc)))
+            return
+
+        if not result["changed"]:
+            await update.message.reply_text(
+                f"Raw #{raw_row_id} уже привязан к кейсу {case_id} вручную."
+            )
+            return
+        await update.message.reply_text(
+            f"Raw #{raw_row_id} привязан к кейсу {case_id}."
+        )
+
+    async def raw_ignore(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_admin_access(update, command_name="/raw_ignore"):
+            return
+
+        raw_row_id = self._parse_required_int_arg(
+            context.args, "/raw_ignore <raw_id> [note]"
+        )
+        if raw_row_id is None:
+            await update.message.reply_text(
+                "Использование: /raw_ignore <raw_id> [note]"
+            )
+            return
+
+        note = " ".join(context.args[1:]).strip() or None
+        try:
+            result = ignore_raw_row(
+                raw_row_id=raw_row_id,
+                actor_id=self._actor_id(update),
+                note=note,
+                db_path=self.config.db_path,
+            )
+        except ValueError as exc:
+            await update.message.reply_text(self._format_review_error(str(exc)))
+            return
+
+        if not result["changed"]:
+            await update.message.reply_text(f"Raw #{raw_row_id} уже помечен как ignored.")
+            return
+        await update.message.reply_text(f"Raw #{raw_row_id} помечен как ignored.")
+
+    async def raw_pending(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_admin_access(update, command_name="/raw_pending"):
+            return
+
+        raw_row_id = self._parse_required_int_arg(
+            context.args, "/raw_pending <raw_id> [note]"
+        )
+        if raw_row_id is None:
+            await update.message.reply_text(
+                "Использование: /raw_pending <raw_id> [note]"
+            )
+            return
+
+        note = " ".join(context.args[1:]).strip() or None
+        try:
+            result = mark_raw_row_pending(
+                raw_row_id=raw_row_id,
+                actor_id=self._actor_id(update),
+                note=note,
+                db_path=self.config.db_path,
+            )
+        except ValueError as exc:
+            await update.message.reply_text(self._format_review_error(str(exc)))
+            return
+
+        if not result["changed"]:
+            await update.message.reply_text(f"Raw #{raw_row_id} уже в pending.")
+            return
+        await update.message.reply_text(f"Raw #{raw_row_id} возвращен в pending.")
 
     async def select_no_move(self, update: Update, context: CallbackContext) -> None:
         context.user_data["expected_upload"] = EXPECTED_NO_MOVE
@@ -895,7 +1084,134 @@ class BotHandlers:
                 document=buffer, caption="Последние 200 строк логов"
             )
 
-    def _is_admin(self, user_id: int) -> bool:
-        return bool(self.config.admin_user_id) and str(user_id) == str(
-            self.config.admin_user_id
+    async def _ensure_admin_access(
+        self, update: Update, command_name: str | None = None
+    ) -> bool:
+        user = update.effective_user
+        message = update.effective_message
+        if not self.config.admin_user_ids:
+            logger.warning(
+                "Admin command unavailable: ids not configured command=%s user_id=%s username=%s",
+                command_name,
+                user.id if user else None,
+                user.username if user else None,
+            )
+            if message:
+                await message.reply_text(
+                    "Команды администратора не настроены. Укажите BOT_ADMIN_IDS или ADMIN_USER_ID."
+                )
+            return False
+
+        if user and self._is_admin(user.id):
+            return True
+
+        logger.warning(
+            "Admin access denied command=%s user_id=%s username=%s",
+            command_name,
+            user.id if user else None,
+            user.username if user else None,
         )
+        if message:
+            await message.reply_text("У вас нет прав для этой команды.")
+        return False
+
+    def _parse_raw_queue_args(self, args: list[str]) -> tuple[int, str | None]:
+        limit = 10
+        source_kind = None
+        for arg in args[:2]:
+            if arg.isdigit():
+                limit = max(1, min(int(arg), 50))
+                continue
+            normalized = arg.strip().lower()
+            if normalized in {SOURCE_KIND_NO_MOVE, SOURCE_KIND_24H}:
+                source_kind = normalized
+        return limit, source_kind
+
+    def _parse_required_int_arg(
+        self, args: list[str], usage: str
+    ) -> int | None:
+        if not args:
+            return None
+        try:
+            return int(args[0])
+        except ValueError:
+            logger.warning("Invalid integer argument for %s: %s", usage, args[0])
+            return None
+
+    def _actor_id(self, update: Update) -> str:
+        user = update.effective_user
+        return str(user.id) if user else "unknown"
+
+    def _display_value(self, value: object) -> str:
+        text = str(value).strip() if value is not None else ""
+        return text or "—"
+
+    def _short_text(self, value: object, limit: int = 40) -> str:
+        text = self._display_value(value)
+        if len(text) <= limit:
+            return text
+        return f"{text[: limit - 1]}…"
+
+    def _format_raw_source(self, raw_row: dict) -> str:
+        parts = []
+        if raw_row.get("source_file_name"):
+            parts.append(str(raw_row["source_file_name"]))
+        if raw_row.get("source_sheet_name"):
+            parts.append(str(raw_row["source_sheet_name"]))
+        if raw_row.get("source_row_number"):
+            parts.append(f"row {raw_row['source_row_number']}")
+        return " / ".join(parts) or self._short_text(raw_row.get("source_path"), 48)
+
+    def _format_raw_queue_line(self, raw_row: dict) -> str:
+        identity = self._short_text(
+            raw_row.get("shk")
+            or raw_row.get("tare_transfer")
+            or raw_row.get("item_name"),
+            28,
+        )
+        return (
+            f"#{raw_row['id']} [{self._display_value(raw_row.get('source_kind'))}] "
+            f"{identity} | conf={self._display_value(raw_row.get('match_confidence'))} | "
+            f"src={self._short_text(self._format_raw_source(raw_row), 44)}"
+        )
+
+    def _format_raw_details(self, raw_row: dict) -> str:
+        lines = [
+            f"Raw #{raw_row['id']}",
+            f"Источник: {self._display_value(raw_row.get('source_kind'))}",
+            f"Файл/лист: {self._display_value(self._format_raw_source(raw_row))}",
+            f"source_path: {self._display_value(raw_row.get('source_path'))}",
+            f"SHK: {self._display_value(raw_row.get('shk'))}",
+            f"Тара/передача: {self._display_value(raw_row.get('tare_transfer'))}",
+            f"Товар: {self._display_value(raw_row.get('item_name'))}",
+            f"Сумма: {self._display_value(raw_row.get('amount'))}",
+            f"Кол-во SHK: {self._display_value(raw_row.get('qty_shk'))}",
+            f"Последнее движение: {self._display_value(raw_row.get('last_movement_at'))}",
+            f"Начало списания: {self._display_value(raw_row.get('writeoff_started_at'))}",
+            f"matched_case_id: {self._display_value(raw_row.get('matched_case_id'))}",
+            f"match_method: {self._display_value(raw_row.get('match_method'))}",
+            f"match_confidence: {self._display_value(raw_row.get('match_confidence'))}",
+            f"review_status: {self._display_value(raw_row.get('review_status'))}",
+            f"review_note: {self._display_value(raw_row.get('review_note'))}",
+            f"reviewed_at: {self._display_value(raw_row.get('reviewed_at'))}",
+            f"reviewed_by: {self._display_value(raw_row.get('reviewed_by'))}",
+            f"manual_linked_at: {self._display_value(raw_row.get('manual_linked_at'))}",
+            f"link_reason: {self._display_value(raw_row.get('link_decision_reason'))}",
+        ]
+        return "\n".join(lines)
+
+    def _format_review_error(self, error_text: str) -> str:
+        if error_text.startswith("raw row not found:"):
+            raw_row_id = error_text.split(":", 1)[1].strip()
+            return f"Raw-строка #{raw_row_id} не найдена."
+        if error_text.startswith("case not found:"):
+            case_id = error_text.split(":", 1)[1].strip()
+            return f"Кейс {case_id} не найден."
+        if error_text == "case_id is required":
+            return "Нужно указать case_id."
+        if error_text == "actor_id is required":
+            return "Не удалось определить администратора."
+        return "Операцию не удалось выполнить."
+
+    def _is_admin(self, user_id: int) -> bool:
+        return str(user_id) in self.config.admin_user_ids

@@ -102,6 +102,19 @@ SCHEMA_STATEMENTS = (
     )
     """,
     """
+    CREATE TABLE IF NOT EXISTS raw_review_actions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        raw_row_id INTEGER NOT NULL,
+        action TEXT NOT NULL,
+        previous_case_id TEXT,
+        new_case_id TEXT,
+        actor_id TEXT,
+        note TEXT,
+        created_at TEXT NOT NULL,
+        FOREIGN KEY (raw_row_id) REFERENCES raw_yadisk_rows(id)
+    )
+    """,
+    """
     CREATE TABLE IF NOT EXISTS sheet_sync_state (
         sheet_name TEXT PRIMARY KEY,
         last_sync_at TEXT,
@@ -141,6 +154,14 @@ RAW_YADISK_STAGE3_COLUMNS = {
     "link_decision_reason": "TEXT",
 }
 
+RAW_YADISK_STAGE5_COLUMNS = {
+    "review_status": "TEXT NOT NULL DEFAULT 'pending'",
+    "review_note": "TEXT",
+    "reviewed_at": "TEXT",
+    "reviewed_by": "TEXT",
+    "manual_linked_at": "TEXT",
+}
+
 INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_case_versions_case_id ON case_versions(case_id)",
     "CREATE INDEX IF NOT EXISTS idx_case_versions_row_hash ON case_versions(row_hash)",
@@ -169,8 +190,10 @@ INDEX_STATEMENTS = (
     "CREATE INDEX IF NOT EXISTS idx_raw_yadisk_rows_item_name ON raw_yadisk_rows(item_name)",
     "CREATE INDEX IF NOT EXISTS idx_raw_yadisk_rows_matched_case_id ON raw_yadisk_rows(matched_case_id)",
     "CREATE INDEX IF NOT EXISTS idx_raw_yadisk_rows_import_batch_id ON raw_yadisk_rows(import_batch_id)",
+    "CREATE INDEX IF NOT EXISTS idx_raw_yadisk_rows_review_status ON raw_yadisk_rows(review_status)",
     "CREATE INDEX IF NOT EXISTS idx_raw_yadisk_rows_source_kind ON raw_yadisk_rows(source_kind)",
     "CREATE INDEX IF NOT EXISTS idx_raw_yadisk_rows_source_row_number ON raw_yadisk_rows(source_row_number)",
+    "CREATE INDEX IF NOT EXISTS idx_raw_review_actions_raw_row_id ON raw_review_actions(raw_row_id)",
     (
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_raw_yadisk_rows_source_dedupe "
         "ON raw_yadisk_rows("
@@ -362,6 +385,10 @@ def _apply_stage3_migrations(conn: sqlite3.Connection) -> None:
     _dedupe_existing_rows(conn)
 
 
+def _apply_stage5_migrations(conn: sqlite3.Connection) -> None:
+    _ensure_columns(conn, "raw_yadisk_rows", RAW_YADISK_STAGE5_COLUMNS)
+
+
 def init_db(db_path: str | Path | None = None) -> Path:
     resolved_path = resolve_db_path(db_path)
     with _managed_connection(db_path=resolved_path) as conn:
@@ -369,6 +396,7 @@ def init_db(db_path: str | Path | None = None) -> Path:
             conn.execute(statement)
         _apply_stage2_migrations(conn)
         _apply_stage3_migrations(conn)
+        _apply_stage5_migrations(conn)
         for statement in INDEX_STATEMENTS:
             conn.execute(statement)
     return resolved_path
@@ -1162,6 +1190,19 @@ def update_raw_yadisk_match(
             [*updates.values(), int(raw_row_id)],
         )
         return True
+
+
+def get_raw_yadisk_row(
+    raw_row_id: int,
+    connection: sqlite3.Connection | None = None,
+    db_path: str | Path | None = None,
+) -> dict[str, Any] | None:
+    with _managed_connection(connection, db_path) as conn:
+        row = conn.execute(
+            "SELECT * FROM raw_yadisk_rows WHERE id = ? LIMIT 1",
+            (int(raw_row_id),),
+        ).fetchone()
+        return dict(row) if row else None
 
 
 def _find_cases_by_field(
