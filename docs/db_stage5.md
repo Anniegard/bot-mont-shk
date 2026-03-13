@@ -3,7 +3,7 @@
 ## Что добавлено
 
 - Operational review layer для unresolved raw-строк из `raw_yadisk_rows`.
-- Admin-only Telegram-команды для очереди разбора, просмотра строки, кандидатов, ручной привязки, ignore и возврата в pending.
+- Admin-only Telegram-команды для очереди разбора, просмотра строки, кандидатов, ручной привязки, явного unlink, ignore и возврата в pending.
 - Audit trail в `raw_review_actions`.
 
 ## Изменения в БД
@@ -43,9 +43,25 @@
    - посмотреть детали `/raw_show <raw_id>`
    - посмотреть deterministic candidates `/raw_candidates <raw_id>`
    - вручную привязать к существующему `case_id` через `/raw_link <raw_id> <case_id>`
+   - явно снять связь с кейсом через `/raw_unlink <raw_id> [note]`
    - пометить как ignored `/raw_ignore <raw_id> [note]`
    - вернуть обратно в pending `/raw_pending <raw_id> [note]`
 5. Каждое ручное действие пишет запись в `raw_review_actions`.
+
+## Семантика review-статусов
+
+- `pending` — строка снова находится в очереди на разбор.
+- `ignored` — оператор решил временно не разбирать строку.
+- `linked` — строка вручную привязана к существующему `case_id`.
+
+`/raw_pending` теперь только переоткрывает строку для review и не снимает существующую связь.
+
+`/raw_unlink` — отдельное явное действие для снятия `matched_case_id`. Оно:
+
+- очищает только review/link-поля raw-строки;
+- возвращает строку в `pending`;
+- пишет audit-запись `manual_unlink` в `raw_review_actions`;
+- не изменяет `cases`, `case_versions` и данные кейсов из Google Sheets.
 
 ## Как работает manual link
 

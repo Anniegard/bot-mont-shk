@@ -13,7 +13,7 @@ Telegram-бот принимает два типа файлов и пишет р
   - ☁️ Взять с Я.Диска (последний файл) — скачать последний файл из папок Я.Диска по OAuth.
   - 📎 Инструкция по загрузке на Диск.
   - 🛠 Админ-панель (только для администраторов из `BOT_ADMIN_IDS` или `ADMIN_USER_ID`).
-- Admin review layer для `raw_yadisk_rows`: просмотр очереди unresolved строк, детали, кандидаты, ручная привязка к существующему `case_id`, ignore/re-open, audit trail.
+- Admin review layer для `raw_yadisk_rows`: просмотр очереди unresolved строк, детали, кандидаты, ручная привязка к существующему `case_id`, явный unlink, ignore/re-open, audit trail.
 - Приём входных данных: документ в Telegram до 20 МБ, прямая ссылка, Яндекс.Диск (OAuth, без публичных ссылок), zip с Excel внутри.
 - «Без движения»: группировка по «Гофра», идентификаторы товара собираются через `\n` в одной ячейке, фильтр `Стоимость > 2000`, колонка названа «Идентификатор товара».
 - «24 часа»: берётся snapshot, пересекается с картой ID тары из «Без движения», группируется по ID тары, берётся минимальный прогноз по группе, сортируется по времени.
@@ -75,8 +75,12 @@ python main.py
    - `/raw_show <raw_id>`
    - `/raw_candidates <raw_id>`
    - `/raw_link <raw_id> <case_id> [note]`
+   - `/raw_unlink <raw_id> [note]`
    - `/raw_ignore <raw_id> [note]`
    - `/raw_pending <raw_id> [note]`
+   - `/raw_pending` только возвращает строку в review queue.
+   - `/raw_unlink` явно снимает связь с кейсом и тоже возвращает строку в `pending`.
+   - Google Sheets остаётся master-источником данных кейса; review-команды не меняют `cases` и не создают новые кейсы.
 
 ## Яндекс.Диск (OAuth, без публичных ссылок)
 - Создайте папки `disk:/BOT_UPLOADS/no_move/` и `disk:/BOT_UPLOADS/24h/`.
@@ -99,7 +103,7 @@ pytest
   - приоритетный matching `shk -> tare_transfer -> item_name`;
   - ambiguous matching без авто-линковки;
   - сохранение существующего `case_id` без перегенерации;
-  - manual link / ignore / mark pending для raw review;
+  - manual link / manual unlink / ignore / mark pending для raw review;
   - parsing `BOT_ADMIN_IDS` / `ADMIN_USER_ID`.
 - Сознательно не покрыто на этом этапе:
   - живые интеграции с Google Sheets и Yandex Disk;

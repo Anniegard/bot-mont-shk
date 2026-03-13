@@ -317,6 +317,64 @@ def manual_link_raw_row(
         return {"changed": True, "raw_row": updated_row}
 
 
+def manual_unlink_raw_row(
+    raw_row_id: int,
+    actor_id: str,
+    note: str | None = None,
+    connection: sqlite3.Connection | None = None,
+    db_path: str | Path | None = None,
+) -> dict[str, Any]:
+    normalized_actor_id = normalize_empty_value(actor_id)
+    normalized_note = normalize_empty_value(note)
+    if not normalized_actor_id:
+        raise ValueError("actor_id is required")
+
+    with _managed_connection(connection, db_path) as conn:
+        raw_row = get_raw_yadisk_row(raw_row_id, connection=conn)
+        if raw_row is None:
+            raise ValueError(f"raw row not found: {raw_row_id}")
+
+        previous_case_id = normalize_empty_value(raw_row.get("matched_case_id"))
+        is_already_pending_unlinked = (
+            previous_case_id is None
+            and normalize_empty_value(raw_row.get("review_status"))
+            == REVIEW_STATUS_PENDING
+        )
+        if is_already_pending_unlinked:
+            return {"changed": False, "had_link": False, "raw_row": raw_row}
+
+        now = utc_now_iso()
+        updates = {
+            "matched_case_id": None,
+            "match_method": "manual_unlink",
+            "match_confidence": "none",
+            "review_status": REVIEW_STATUS_PENDING,
+            "review_note": normalized_note,
+            "reviewed_at": now,
+            "reviewed_by": normalized_actor_id,
+            "manual_linked_at": None,
+            "linked_at": None,
+            "link_decision_reason": "manual unlink by operator",
+        }
+        _update_raw_row(conn, raw_row_id=int(raw_row_id), updates=updates)
+        _insert_review_action(
+            conn,
+            raw_row_id=int(raw_row_id),
+            action="manual_unlink",
+            previous_case_id=previous_case_id,
+            new_case_id=None,
+            actor_id=normalized_actor_id,
+            note=normalized_note,
+            created_at=now,
+        )
+        updated_row = get_raw_yadisk_row(raw_row_id, connection=conn)
+        return {
+            "changed": True,
+            "had_link": previous_case_id is not None,
+            "raw_row": updated_row,
+        }
+
+
 def ignore_raw_row(
     raw_row_id: int,
     actor_id: str,

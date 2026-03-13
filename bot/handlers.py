@@ -55,6 +55,7 @@ from bot.services.raw_review import (
     list_raw_row_candidates,
     list_unresolved_raw_rows,
     manual_link_raw_row,
+    manual_unlink_raw_row,
     mark_raw_row_pending,
 )
 from bot.services.sheets import update_tables
@@ -141,6 +142,7 @@ class BotHandlers:
         application.add_handler(CommandHandler("raw_show", self.raw_show))
         application.add_handler(CommandHandler("raw_candidates", self.raw_candidates))
         application.add_handler(CommandHandler("raw_link", self.raw_link))
+        application.add_handler(CommandHandler("raw_unlink", self.raw_unlink))
         application.add_handler(CommandHandler("raw_ignore", self.raw_ignore))
         application.add_handler(CommandHandler("raw_pending", self.raw_pending))
         application.add_handler(
@@ -216,8 +218,9 @@ class BotHandlers:
             "/raw_show <raw_id> - детали raw-строки\n"
             "/raw_candidates <raw_id> - безопасные кандидаты case_id\n"
             "/raw_link <raw_id> <case_id> [note] - вручную привязать строку\n"
+            "/raw_unlink <raw_id> [note] - снять связь с кейсом и вернуть в pending\n"
             "/raw_ignore <raw_id> [note] - пометить как игнор\n"
-            "/raw_pending <raw_id> [note] - вернуть в pending"
+            "/raw_pending <raw_id> [note] - вернуть в очередь без снятия связи"
         )
 
     async def raw_queue(self, update: Update, context: CallbackContext) -> None:
@@ -361,6 +364,45 @@ class BotHandlers:
             return
         await update.message.reply_text(f"Raw #{raw_row_id} помечен как ignored.")
 
+    async def raw_unlink(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_admin_access(update, command_name="/raw_unlink"):
+            return
+
+        raw_row_id = self._parse_required_int_arg(
+            context.args, "/raw_unlink <raw_id> [note]"
+        )
+        if raw_row_id is None:
+            await update.message.reply_text(
+                "Использование: /raw_unlink <raw_id> [note]"
+            )
+            return
+
+        note = " ".join(context.args[1:]).strip() or None
+        try:
+            result = manual_unlink_raw_row(
+                raw_row_id=raw_row_id,
+                actor_id=self._actor_id(update),
+                note=note,
+                db_path=self.config.db_path,
+            )
+        except ValueError as exc:
+            await update.message.reply_text(self._format_review_error(str(exc)))
+            return
+
+        if not result["changed"]:
+            await update.message.reply_text(
+                f"У raw-записи {raw_row_id} уже нет связи с кейсом, запись уже в pending."
+            )
+            return
+        if result["had_link"]:
+            await update.message.reply_text(
+                f"Связь raw-записи {raw_row_id} с кейсом снята. Запись возвращена в pending."
+            )
+            return
+        await update.message.reply_text(
+            f"У raw-записи {raw_row_id} уже не было связи с кейсом. Запись возвращена в pending."
+        )
+
     async def raw_pending(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/raw_pending"):
             return
@@ -389,7 +431,9 @@ class BotHandlers:
         if not result["changed"]:
             await update.message.reply_text(f"Raw #{raw_row_id} уже в pending.")
             return
-        await update.message.reply_text(f"Raw #{raw_row_id} возвращен в pending.")
+        await update.message.reply_text(
+            f"Raw #{raw_row_id} возвращен в pending без снятия связи."
+        )
 
     async def select_no_move(self, update: Update, context: CallbackContext) -> None:
         context.user_data["expected_upload"] = EXPECTED_NO_MOVE
