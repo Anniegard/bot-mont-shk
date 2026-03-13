@@ -3,11 +3,13 @@ from __future__ import annotations
 import logging
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional
+from typing import Any, List, Optional
 from zoneinfo import ZoneInfo
 
 import gspread
 from google.oauth2.service_account import Credentials
+
+from bot.constants import CASE_ID_COLUMN_NAME
 
 SCOPE = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -28,6 +30,57 @@ RIGHT_COLUMNS = [
 META_LABEL = "Актуальность файла 24ч:"
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 UTC_TZ = ZoneInfo("UTC")
+
+
+def _normalize_sheet_cell(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def get_case_id_column_index(headers: list[str]) -> int | None:
+    for index, header in enumerate(headers):
+        if str(header).strip().lower() == CASE_ID_COLUMN_NAME:
+            return index
+    return None
+
+
+def parse_sheet_rows(values: list[list[Any]]) -> list[dict[str, Any]]:
+    if not values:
+        return []
+
+    headers = [str(header).strip() for header in values[0]]
+    case_id_index = get_case_id_column_index(headers)
+    parsed_rows: list[dict[str, Any]] = []
+
+    for row_number, row in enumerate(values[1:], start=2):
+        padded_row = list(row[: len(headers)])
+        if len(padded_row) < len(headers):
+            padded_row.extend([""] * (len(headers) - len(padded_row)))
+
+        raw_row = dict(zip(headers, padded_row))
+        parsed_rows.append(
+            {
+                "row_number": row_number,
+                "case_id": (
+                    _normalize_sheet_cell(padded_row[case_id_index])
+                    if case_id_index is not None and case_id_index < len(padded_row)
+                    else None
+                ),
+                "raw_row": raw_row,
+            }
+        )
+
+    return parsed_rows
+
+
+def read_sheet_rows(
+    client: gspread.Client, spreadsheet_id: str, worksheet_name: Optional[str]
+) -> list[dict[str, Any]]:
+    worksheet = _get_worksheet(client, spreadsheet_id, worksheet_name)
+    values = worksheet.get_all_values()
+    return parse_sheet_rows(values)
 
 
 def authorize_client(credentials_path: Path) -> gspread.Client:

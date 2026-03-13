@@ -1,6 +1,6 @@
 .env
 *.log
-bot_logs.txt
+legacy/bot_logs.txt
 uploaded_file_*.xlsx
 uploaded_*.xlsx
 *service-account*.json
@@ -16,5 +16,8 @@ data/last_*.json
 data/last_*.pkl
 data/*.zip
 data/*.tmp
+data/*.db
+data/*.db-*
 !data/block_ids.txt
 !data/block_ids.txt.example
+!legacy/bot_logs.txt

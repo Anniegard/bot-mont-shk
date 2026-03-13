@@ -13,6 +13,7 @@ class Config:
     telegram_token: str
     spreadsheet_id: str
     google_credentials_path: Path
+    db_path: Path
     worksheet_name: str | None = None
     admin_user_id: str | None = None
     yandex_oauth_token: str | None = None
@@ -29,11 +30,18 @@ def _resolve_credentials_path(path_value: str, root_dir: Path) -> Path:
     return path
 
 
+def _resolve_optional_path(path_value: str, root_dir: Path) -> Path:
+    path = Path(path_value)
+    if not path.is_absolute():
+        path = (root_dir / path_value).resolve()
+    return path
+
+
 def load_config(env_path: str | None = None) -> Config:
     """
     Load configuration from environment (optionally from .env).
     Mandatory: TELEGRAM_TOKEN (or TELEGRAM_BOT_TOKEN), SPREADSHEET_ID, GOOGLE_CREDENTIALS_PATH.
-    Optional: WORKSHEET_NAME, ADMIN_USER_ID.
+    Optional: WORKSHEET_NAME, ADMIN_USER_ID, BOT_DB_PATH.
     """
     root_dir = Path(__file__).resolve().parent.parent
     env_override = os.getenv("BOT_CONFIG_FILE")
@@ -55,6 +63,7 @@ def load_config(env_path: str | None = None) -> Config:
     )
     spreadsheet_id = os.getenv("SPREADSHEET_ID", "")
     credentials_path_value = os.getenv("GOOGLE_CREDENTIALS_PATH", "")
+    db_path_value = os.getenv("BOT_DB_PATH") or "data/bot.db"
     worksheet_name = os.getenv("WORKSHEET_NAME")
     admin_user_id = os.getenv("ADMIN_USER_ID") or None
     yandex_oauth_token = os.getenv("YANDEX_OAUTH_TOKEN") or None
@@ -83,11 +92,14 @@ def load_config(env_path: str | None = None) -> Config:
     credentials_path = _resolve_credentials_path(credentials_path_value, root_dir)
     if not credentials_path.exists():
         raise ValueError(f"GOOGLE_CREDENTIALS_PATH does not exist: {credentials_path}")
+    db_path = _resolve_optional_path(db_path_value, root_dir)
+    db_path.parent.mkdir(parents=True, exist_ok=True)
 
     return Config(
         telegram_token=telegram_token,
         spreadsheet_id=spreadsheet_id,
         google_credentials_path=credentials_path,
+        db_path=db_path,
         worksheet_name=worksheet_name or None,
         admin_user_id=admin_user_id,
         yandex_oauth_token=yandex_oauth_token,
