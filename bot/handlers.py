@@ -48,24 +48,6 @@ from bot.services.yadisk_ingest import (
     SOURCE_KIND_24H,
     SOURCE_KIND_NO_MOVE,
 )
-from bot.services.raw_review import (
-    get_raw_row_details,
-    ignore_raw_row,
-    list_raw_row_candidates,
-    list_unresolved_raw_rows,
-    manual_link_raw_row,
-    manual_unlink_raw_row,
-    mark_raw_row_pending,
-)
-from bot.services.search_service import (
-    DEFAULT_CASE_LIMIT,
-    DEFAULT_CASE_RAW_LIMIT,
-    DEFAULT_RAW_LIMIT,
-    get_case_by_case_id as get_search_case_by_case_id,
-    get_raw_rows_for_case,
-    search_cases,
-    search_raw_rows,
-)
 from bot.services.sheets import update_tables
 
 logger = logging.getLogger(__name__)
@@ -209,336 +191,75 @@ class BotHandlers:
             reply_markup=InlineKeyboardMarkup(admin_keyboard),
         )
 
+    async def _reply_runtime_db_features_disabled(
+        self, update: Update, command_name: str
+    ) -> None:
+        logger.info("Runtime DB features disabled; ignoring command=%s", command_name)
+        message = update.effective_message
+        if message:
+            await message.reply_text(
+                "Команда недоступна: runtime DB features disabled."
+            )
+
     async def raw_help(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/raw_help"):
             return
-        await update.message.reply_text(
-            "Команды разбора raw-строк:\n"
-            "/case_help - поиск кейсов и связанных raw\n"
-            "/raw_queue [limit] [source_kind] - очередь неразобранных строк\n"
-            "/raw_show <raw_id> - детали raw-строки\n"
-            "/raw_candidates <raw_id> - безопасные кандидаты case_id\n"
-            "/raw_link <raw_id> <case_id> [note] - вручную привязать строку\n"
-            "/raw_unlink <raw_id> [note] - снять связь с кейсом и вернуть в pending\n"
-            "/raw_ignore <raw_id> [note] - пометить как игнор\n"
-            "/raw_pending <raw_id> [note] - вернуть в очередь без снятия связи"
-        )
+        await self._reply_runtime_db_features_disabled(update, "/raw_help")
 
     async def case_help(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/case_help"):
             return
-        await update.message.reply_text(
-            "Поиск по кейсам и raw:\n"
-            "/case <query> - кейс по case_id, ШК, таре/передаче или наименованию\n"
-            "/case_raw <case_id> - связанные raw-строки кейса\n"
-            "/raw_find <query> - raw по ШК, таре/передаче или наименованию\n"
-            "Поиск только читает данные. Google Sheets остаётся master для cases."
-        )
+        await self._reply_runtime_db_features_disabled(update, "/case_help")
 
     async def case_search(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/case"):
             return
-
-        query = self._parse_query_text(context.args)
-        if not query:
-            await update.message.reply_text("Использование: /case <query>")
-            return
-
-        search_result = search_cases(
-            query,
-            limit=DEFAULT_CASE_LIMIT,
-            db_path=self.config.db_path,
-        )
-        cases = search_result["results"]
-        if not cases:
-            await update.message.reply_text("Кейсы не найдены.")
-            return
-
-        if len(cases) == 1 and search_result["match_type"] != "partial":
-            await update.message.reply_text(self._format_case_card(cases[0]))
-            return
-
-        lines = [
-            f"Найдено кейсов: {len(cases)}.",
-            self._format_search_hint(search_result),
-            *[self._format_case_list_line(case_row) for case_row in cases],
-        ]
-        if search_result["truncated"]:
-            lines.append(f"Показаны первые {DEFAULT_CASE_LIMIT}.")
-        await update.message.reply_text("\n".join(lines))
+        await self._reply_runtime_db_features_disabled(update, "/case")
 
     async def case_raw(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/case_raw"):
             return
-
-        case_id = self._parse_query_text(context.args)
-        if not case_id:
-            await update.message.reply_text("Использование: /case_raw <case_id>")
-            return
-
-        case_row = get_search_case_by_case_id(case_id, db_path=self.config.db_path)
-        if case_row is None:
-            await update.message.reply_text(f"Кейс {case_id} не найден.")
-            return
-
-        rows = get_raw_rows_for_case(
-            case_id,
-            limit=DEFAULT_CASE_RAW_LIMIT + 1,
-            db_path=self.config.db_path,
-        )
-        if not rows:
-            await update.message.reply_text(
-                f"У кейса {case_id} нет связанных raw-строк."
-            )
-            return
-
-        lines = [
-            f"Связанные raw для {case_id}:",
-            *[self._format_case_raw_line(row) for row in rows[:DEFAULT_CASE_RAW_LIMIT]],
-        ]
-        if len(rows) > DEFAULT_CASE_RAW_LIMIT:
-            lines.append(f"Показаны первые {DEFAULT_CASE_RAW_LIMIT}.")
-        await update.message.reply_text("\n".join(lines))
+        await self._reply_runtime_db_features_disabled(update, "/case_raw")
 
     async def raw_find(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/raw_find"):
             return
-
-        query = self._parse_query_text(context.args)
-        if not query:
-            await update.message.reply_text("Использование: /raw_find <query>")
-            return
-
-        search_result = search_raw_rows(
-            query,
-            limit=DEFAULT_RAW_LIMIT,
-            db_path=self.config.db_path,
-        )
-        rows = search_result["results"]
-        if not rows:
-            await update.message.reply_text("Raw-строки не найдены.")
-            return
-
-        lines = [
-            f"Найдено raw-строк: {len(rows)}.",
-            self._format_search_hint(search_result),
-            *[self._format_raw_search_line(row) for row in rows],
-        ]
-        if search_result["truncated"]:
-            lines.append(f"Показаны первые {DEFAULT_RAW_LIMIT}.")
-        await update.message.reply_text("\n".join(lines))
+        await self._reply_runtime_db_features_disabled(update, "/raw_find")
 
     async def raw_queue(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/raw_queue"):
             return
-
-        limit, source_kind = self._parse_raw_queue_args(context.args)
-        rows = list_unresolved_raw_rows(
-            limit=limit,
-            source_kind=source_kind,
-            db_path=self.config.db_path,
-        )
-        if not rows:
-            await update.message.reply_text("Неразобранных raw-строк сейчас нет.")
-            return
-
-        lines = [
-            "Очередь raw-строк на разбор:",
-            *[self._format_raw_queue_line(row) for row in rows],
-        ]
-        await update.message.reply_text("\n".join(lines))
+        await self._reply_runtime_db_features_disabled(update, "/raw_queue")
 
     async def raw_show(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/raw_show"):
             return
-
-        raw_row_id = self._parse_required_int_arg(context.args, "/raw_show <raw_id>")
-        if raw_row_id is None:
-            await update.message.reply_text("Использование: /raw_show <raw_id>")
-            return
-
-        raw_row = get_raw_row_details(raw_row_id, db_path=self.config.db_path)
-        if raw_row is None:
-            await update.message.reply_text(f"Raw-строка #{raw_row_id} не найдена.")
-            return
-
-        await update.message.reply_text(self._format_raw_details(raw_row))
+        await self._reply_runtime_db_features_disabled(update, "/raw_show")
 
     async def raw_candidates(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/raw_candidates"):
             return
-
-        raw_row_id = self._parse_required_int_arg(
-            context.args, "/raw_candidates <raw_id>"
-        )
-        if raw_row_id is None:
-            await update.message.reply_text("Использование: /raw_candidates <raw_id>")
-            return
-
-        try:
-            candidates = list_raw_row_candidates(
-                raw_row_id,
-                db_path=self.config.db_path,
-            )
-        except ValueError:
-            await update.message.reply_text(f"Raw-строка #{raw_row_id} не найдена.")
-            return
-
-        if not candidates:
-            await update.message.reply_text(
-                f"Для raw #{raw_row_id} безопасных кандидатов не найдено."
-            )
-            return
-
-        lines = [f"Кандидаты для raw #{raw_row_id}:"]
-        for candidate in candidates:
-            lines.append(
-                f"{candidate['case_id']} | {candidate['reason']} | "
-                f"SHK: {self._display_value(candidate.get('shk'))} | "
-                f"тара: {self._display_value(candidate.get('tare_transfer'))} | "
-                f"товар: {self._display_value(candidate.get('item_name'))}"
-            )
-        await update.message.reply_text("\n".join(lines))
+        await self._reply_runtime_db_features_disabled(update, "/raw_candidates")
 
     async def raw_link(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/raw_link"):
             return
-
-        if len(context.args) < 2:
-            await update.message.reply_text(
-                "Использование: /raw_link <raw_id> <case_id> [note]"
-            )
-            return
-
-        try:
-            raw_row_id = int(context.args[0])
-        except ValueError:
-            await update.message.reply_text("raw_id должен быть числом.")
-            return
-
-        case_id = context.args[1]
-        note = " ".join(context.args[2:]).strip() or None
-        try:
-            result = manual_link_raw_row(
-                raw_row_id=raw_row_id,
-                case_id=case_id,
-                actor_id=self._actor_id(update),
-                note=note,
-                db_path=self.config.db_path,
-            )
-        except ValueError as exc:
-            await update.message.reply_text(self._format_review_error(str(exc)))
-            return
-
-        if not result["changed"]:
-            await update.message.reply_text(
-                f"Raw #{raw_row_id} уже привязан к кейсу {case_id} вручную."
-            )
-            return
-        await update.message.reply_text(
-            f"Raw #{raw_row_id} привязан к кейсу {case_id}."
-        )
+        await self._reply_runtime_db_features_disabled(update, "/raw_link")
 
     async def raw_ignore(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/raw_ignore"):
             return
-
-        raw_row_id = self._parse_required_int_arg(
-            context.args, "/raw_ignore <raw_id> [note]"
-        )
-        if raw_row_id is None:
-            await update.message.reply_text(
-                "Использование: /raw_ignore <raw_id> [note]"
-            )
-            return
-
-        note = " ".join(context.args[1:]).strip() or None
-        try:
-            result = ignore_raw_row(
-                raw_row_id=raw_row_id,
-                actor_id=self._actor_id(update),
-                note=note,
-                db_path=self.config.db_path,
-            )
-        except ValueError as exc:
-            await update.message.reply_text(self._format_review_error(str(exc)))
-            return
-
-        if not result["changed"]:
-            await update.message.reply_text(f"Raw #{raw_row_id} уже помечен как ignored.")
-            return
-        await update.message.reply_text(f"Raw #{raw_row_id} помечен как ignored.")
+        await self._reply_runtime_db_features_disabled(update, "/raw_ignore")
 
     async def raw_unlink(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/raw_unlink"):
             return
-
-        raw_row_id = self._parse_required_int_arg(
-            context.args, "/raw_unlink <raw_id> [note]"
-        )
-        if raw_row_id is None:
-            await update.message.reply_text(
-                "Использование: /raw_unlink <raw_id> [note]"
-            )
-            return
-
-        note = " ".join(context.args[1:]).strip() or None
-        try:
-            result = manual_unlink_raw_row(
-                raw_row_id=raw_row_id,
-                actor_id=self._actor_id(update),
-                note=note,
-                db_path=self.config.db_path,
-            )
-        except ValueError as exc:
-            await update.message.reply_text(self._format_review_error(str(exc)))
-            return
-
-        if not result["changed"]:
-            await update.message.reply_text(
-                f"У raw-записи {raw_row_id} уже нет связи с кейсом, запись уже в pending."
-            )
-            return
-        if result["had_link"]:
-            await update.message.reply_text(
-                f"Связь raw-записи {raw_row_id} с кейсом снята. Запись возвращена в pending."
-            )
-            return
-        await update.message.reply_text(
-            f"У raw-записи {raw_row_id} уже не было связи с кейсом. Запись возвращена в pending."
-        )
+        await self._reply_runtime_db_features_disabled(update, "/raw_unlink")
 
     async def raw_pending(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/raw_pending"):
             return
-
-        raw_row_id = self._parse_required_int_arg(
-            context.args, "/raw_pending <raw_id> [note]"
-        )
-        if raw_row_id is None:
-            await update.message.reply_text(
-                "Использование: /raw_pending <raw_id> [note]"
-            )
-            return
-
-        note = " ".join(context.args[1:]).strip() or None
-        try:
-            result = mark_raw_row_pending(
-                raw_row_id=raw_row_id,
-                actor_id=self._actor_id(update),
-                note=note,
-                db_path=self.config.db_path,
-            )
-        except ValueError as exc:
-            await update.message.reply_text(self._format_review_error(str(exc)))
-            return
-
-        if not result["changed"]:
-            await update.message.reply_text(f"Raw #{raw_row_id} уже в pending.")
-            return
-        await update.message.reply_text(
-            f"Raw #{raw_row_id} возвращен в pending без снятия связи."
-        )
+        await self._reply_runtime_db_features_disabled(update, "/raw_pending")
 
     async def select_no_move(self, update: Update, context: CallbackContext) -> None:
         context.user_data["expected_upload"] = EXPECTED_NO_MOVE
@@ -1336,7 +1057,6 @@ class BotHandlers:
             f"Склад: {self._display_value(case_row.get('warehouse'))}",
             f"Лист/строка: {self._display_value(' / '.join(source_parts) if source_parts else None)}",
             f"Синхронизация: {self._display_value(case_row.get('last_synced_at'))}",
-            f"Raw: /case_raw {case_row['case_id']}",
         ]
         return "\n".join(lines)
 

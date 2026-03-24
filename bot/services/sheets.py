@@ -39,6 +39,23 @@ def _normalize_sheet_cell(value: Any) -> str | None:
     return text or None
 
 
+def _normalize_export_cell(value: Any) -> str:
+    normalized = _normalize_sheet_cell(value)
+    return normalized or ""
+
+
+def _normalize_export_rows(rows: List[List], width: int) -> list[list[str]]:
+    normalized_rows: list[list[str]] = []
+    for row in rows:
+        padded_row = list(row[:width])
+        if len(padded_row) < width:
+            padded_row.extend([""] * (width - len(padded_row)))
+        normalized_rows.append(
+            [_normalize_export_cell(value) for value in padded_row]
+        )
+    return normalized_rows
+
+
 def get_case_id_column_index(headers: list[str]) -> int | None:
     for index, header in enumerate(headers):
         if str(header).strip().lower() == CASE_ID_COLUMN_NAME:
@@ -152,6 +169,7 @@ def _update_no_move_export_tab(
     left_rows: List[List],
 ) -> None:
     start_row = 5  # rows 1-4 reserved (headers + empty row 4)
+    normalized_left_rows = _normalize_export_rows(left_rows, len(LEFT_COLUMNS))
     _ensure_worksheet_columns(worksheet, 5)
 
     left_existing = max(len(worksheet.col_values(2)) - (start_row - 1), 0)
@@ -162,11 +180,11 @@ def _update_no_move_export_tab(
         {"range": "B2:E2", "values": [[LEFT_HEADER_TITLE, "", "", ""]]},
         {"range": "B3:E3", "values": [LEFT_COLUMNS]},
     ]
-    if left_rows:
+    if normalized_left_rows:
         updates.append(
             {
-                "range": f"B{start_row}:E{start_row + len(left_rows) - 1}",
-                "values": left_rows,
+                "range": f"B{start_row}:E{start_row + len(normalized_left_rows) - 1}",
+                "values": normalized_left_rows,
             }
         )
 
@@ -184,6 +202,7 @@ def _update_24h_export_tab(
     right_meta: Optional[dict],
 ) -> None:
     start_row = 5  # rows 1-4 reserved (headers + empty row 4)
+    normalized_right_rows = _normalize_export_rows(right_rows, len(RIGHT_COLUMNS))
     _ensure_worksheet_columns(worksheet, 16)
 
     right_existing = max(len(worksheet.col_values(11)) - (start_row - 1), 0)
@@ -196,11 +215,11 @@ def _update_24h_export_tab(
         {"range": "P2", "values": [[META_LABEL]]},
         {"range": "P3", "values": [[_format_meta_uploaded_at(right_meta)]]},
     ]
-    if right_rows:
+    if normalized_right_rows:
         updates.append(
             {
-                "range": f"K{start_row}:O{start_row + len(right_rows) - 1}",
-                "values": right_rows,
+                "range": f"K{start_row}:O{start_row + len(normalized_right_rows) - 1}",
+                "values": normalized_right_rows,
             }
         )
 

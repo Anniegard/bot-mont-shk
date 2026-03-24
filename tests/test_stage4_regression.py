@@ -317,3 +317,29 @@ def test_update_tables_right_only_falls_back_to_sheet1_when_named_worksheet_miss
         "P3",
         "K5:O5",
     ]
+
+
+def test_update_tables_left_only_uses_sheet1_when_worksheet_name_is_empty() -> None:
+    master = FakeWorksheet([[]], title="Master", col_count=16)
+    spreadsheet = FakeSpreadsheet([master])
+    client = FakeClient(spreadsheet)
+
+    update_tables(
+        client=client,
+        spreadsheet_id="spreadsheet-id",
+        worksheet_name=None,
+        left_rows=[["gofra", None, "1"]],
+        right_rows=[],
+        right_meta=None,
+        skip_left=False,
+        skip_right=True,
+    )
+
+    assert spreadsheet.add_worksheet_calls == []
+    assert len(master.batch_update_calls) == 1
+    assert [entry["range"] for entry in master.batch_update_calls[0]] == [
+        "B2:E2",
+        "B3:E3",
+        "B5:E5",
+    ]
+    assert master.batch_update_calls[0][2]["values"] == [["gofra", "", "1", ""]]
