@@ -13,10 +13,8 @@ Telegram-бот принимает два типа файлов и пишет р
   - ☁️ Взять с Я.Диска (последний файл) — скачать последний файл из папок Я.Диска по OAuth.
   - 📎 Инструкция по загрузке на Диск.
   - 🛠 Админ-панель (только для администраторов из `BOT_ADMIN_IDS` или `ADMIN_USER_ID`).
-- Admin review layer для `raw_yadisk_rows`: просмотр очереди unresolved строк, детали, кандидаты, ручная привязка к существующему `case_id`, явный unlink, ignore/re-open, audit trail.
-- Admin search layer: read-only поиск кейсов и связанных raw-строк прямо из Telegram.
+- Runtime raw DB features сейчас отключены: review/search команды для `raw_yadisk_rows` и кейсов не зарегистрированы в боте.
 - Приём входных данных: документ в Telegram до 20 МБ, прямая ссылка, Яндекс.Диск (OAuth, без публичных ссылок), zip с Excel внутри.
-- Автоматический match при raw ingest в критическом пути идёт только по точному `shk`, затем по точному `tare_transfer`; fallback по `item_name` по умолчанию отключён, unresolved строки остаются для ручного review.
 - «Без движения»: группировка по «Гофра», идентификаторы товара собираются через `\n` в одной ячейке, фильтр `Стоимость > 2000`, колонка названа «Идентификатор товара».
 - «24 часа»: берётся snapshot, пересекается с картой ID тары из «Без движения», группируется по ID тары, берётся минимальный прогноз по группе, сортируется по времени.
 - Логирование действий в `logs/bot.log` (ротация 5MB×3) + stdout.
@@ -73,25 +71,7 @@ python main.py
    - ⏱ 24 часа — отправьте прогноз или нажмите «☁️ Взять с Я.Диска…»; правый блок обновится сразу, если есть карта ID тары.
 3. «📎 Инструкция…» — напоминает, куда класть файлы на Я.Диск.
 4. Админ-панель — только для администраторов из `BOT_ADMIN_IDS` или `ADMIN_USER_ID`.
-5. Admin review-команды для unresolved raw-строк:
-   - `/case_help`
-   - `/case <query>`
-   - `/case_raw <case_id>`
-   - `/raw_find <query>`
-   - `/raw_help`
-   - `/raw_queue [limit] [source_kind]`
-   - `/raw_show <raw_id>`
-   - `/raw_candidates <raw_id>`
-   - `/raw_link <raw_id> <case_id> [note]`
-   - `/raw_unlink <raw_id> [note]`
-   - `/raw_ignore <raw_id> [note]`
-   - `/raw_pending <raw_id> [note]`
-   - `/case` ищет по `case_id -> ШК -> тара/передача -> наименование`.
-   - `/case_raw` показывает raw-строки, уже связанные с кейсом.
-   - `/raw_find` ищет raw-строки по `ШК`, `таре/передаче` или `наименованию`.
-   - `/raw_pending` только возвращает строку в review queue.
-   - `/raw_unlink` явно снимает связь с кейсом и тоже возвращает строку в `pending`.
-   - Поиск read-only: Google Sheets остаётся master-источником данных кейса; search/review-команды не меняют `cases` и не создают новые кейсы.
+5. Runtime raw DB review/search команды сейчас отключены и в Telegram не зарегистрированы.
 
 ## Яндекс.Диск (OAuth, без публичных ссылок)
 - Создайте папки `disk:/BOT_UPLOADS/no_move/` и `disk:/BOT_UPLOADS/24h/`.
@@ -111,8 +91,7 @@ pytest
 ```
 - Покрыто минимальными regression-тестами:
   - dedupe для `case_versions`, `raw_sheet_rows`, `raw_yadisk_rows`;
-  - fast-path matching `shk -> tare_transfer`, без auto-match по `item_name` по умолчанию;
-  - опциональное повторное включение `item_name` auto-match через флаг;
+  - приоритетный matching `shk -> tare_transfer -> item_name`;
   - ambiguous matching без авто-линковки;
   - сохранение существующего `case_id` без перегенерации;
   - manual link / manual unlink / ignore / mark pending для raw review;

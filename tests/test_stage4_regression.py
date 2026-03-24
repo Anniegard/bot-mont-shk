@@ -12,7 +12,7 @@ from bot.db import (
 from bot.services import case_sync
 from bot.services.case_sync import REQUIRED_FIELD_LABELS, read_master_sheet_rows
 from bot.services.sheets import update_tables
-from bot.services.yadisk_ingest import ENABLE_ITEM_NAME_AUTO_MATCH, match_raw_row_to_case
+from bot.services.yadisk_ingest import match_raw_row_to_case
 
 
 def _row_count(connection, table_name: str) -> int:
@@ -169,7 +169,7 @@ def test_raw_yadisk_rows_dedupe_for_same_source_and_hash(connection) -> None:
     assert _row_count(connection, "raw_yadisk_rows") == 1
 
 
-def test_matching_uses_shk_then_tare_transfer_in_fast_path(connection, seed_case) -> None:
+def test_matching_uses_shk_then_tare_transfer_then_item_name(connection, seed_case) -> None:
     seed_case("case-by-name", item_name="Target name")
     seed_case("case-by-tare", tare_transfer="TARE-1")
     seed_case("case-by-shk", shk="SHK-1")
@@ -186,6 +186,12 @@ def test_matching_uses_shk_then_tare_transfer_in_fast_path(connection, seed_case
         item_name="Target name",
         connection=connection,
     )
+    by_name = match_raw_row_to_case(
+        shk="missing",
+        tare_transfer="missing",
+        item_name="Target name",
+        connection=connection,
+    )
 
     assert by_shk["matched_case_id"] == "case-by-shk"
     assert by_shk["match_method"] == "shk"
@@ -194,39 +200,9 @@ def test_matching_uses_shk_then_tare_transfer_in_fast_path(connection, seed_case
     assert by_tare["matched_case_id"] == "case-by-tare"
     assert by_tare["match_method"] == "tare_transfer"
     assert by_tare["match_confidence"] == "medium"
-
-
-def test_matching_skips_item_name_in_default_ingest_fast_path(connection, seed_case) -> None:
-    seed_case("case-by-name", item_name="Target name")
-
-    result = match_raw_row_to_case(
-        shk="missing",
-        tare_transfer="missing",
-        item_name="Target name",
-        connection=connection,
-    )
-
-    assert result["matched_case_id"] is None
-    assert result["match_method"] == "none"
-    assert result["match_confidence"] == "none"
-    assert result["link_decision_reason"] == "item_name auto-match skipped in ingest fast path"
-
-
-def test_matching_can_reenable_item_name_via_flag(connection, seed_case) -> None:
-    seed_case("case-by-name", item_name="Target name")
-
-    result = match_raw_row_to_case(
-        shk="missing",
-        tare_transfer="missing",
-        item_name="Target name",
-        enable_item_name_auto_match=True,
-        connection=connection,
-    )
-
-    assert ENABLE_ITEM_NAME_AUTO_MATCH is False
-    assert result["matched_case_id"] == "case-by-name"
-    assert result["match_method"] == "item_name"
-    assert result["match_confidence"] == "low"
+    assert by_name["matched_case_id"] == "case-by-name"
+    assert by_name["match_method"] == "item_name"
+    assert by_name["match_confidence"] == "low"
 
 
 def test_matching_marks_ambiguous_candidates_without_autolink(connection, seed_case) -> None:
