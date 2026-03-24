@@ -87,6 +87,57 @@ async def yadisk_list_latest(
     }
 
 
+async def yadisk_list_files(
+    token: str, folder_path: str, exts: Tuple[str, ...]
+) -> list[Dict]:
+    folder_norm = _normalize_path(folder_path, ensure_dir=True)
+    url = "https://cloud-api.yandex.net/v1/disk/resources"
+    offset = 0
+    limit = 200
+    items: list[Dict] = []
+
+    async with aiohttp.ClientSession() as session:
+        while True:
+            params = {
+                "path": folder_norm,
+                "limit": limit,
+                "offset": offset,
+                "sort": "name",
+            }
+            async with session.get(
+                url, headers=_auth_headers(token), params=params, timeout=15
+            ) as resp:
+                await _raise_for_status(resp)
+                data = await resp.json()
+
+            embedded = data.get("_embedded", {})
+            page_items = embedded.get("items", [])
+            if not page_items:
+                break
+
+            items.extend(page_items)
+            if len(page_items) < limit:
+                break
+            offset += limit
+
+    files = [
+        {
+            "name": item.get("name"),
+            "path": item.get("path"),
+            "modified": item.get("modified"),
+            "size": item.get("size"),
+        }
+        for item in items
+        if item.get("type") == "file"
+        and any(item.get("name", "").lower().endswith(ext.lower()) for ext in exts)
+    ]
+
+    if not files:
+        raise YaDiskError("В папке нет подходящих файлов (xlsx/xls/zip).")
+
+    return files
+
+
 async def _download_stream(
     session: aiohttp.ClientSession, url: str, dest_path: Path, max_bytes: int
 ) -> int:

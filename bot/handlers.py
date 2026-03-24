@@ -4,8 +4,11 @@ import asyncio
 import logging
 import time
 import re
+from datetime import datetime
 from html import escape
 from pathlib import Path
+from tempfile import TemporaryDirectory
+from zoneinfo import ZoneInfo
 
 from telegram import (
     InlineKeyboardButton,
@@ -43,23 +46,34 @@ from bot.services.file_sources import (
     is_url,
     maybe_extract_zip,
 )
-from bot.services.yadisk import YaDiskError, yadisk_download_file, yadisk_list_latest
+from bot.services.yadisk import (
+    YaDiskError,
+    yadisk_download_file,
+    yadisk_list_files,
+    yadisk_list_latest,
+)
 from bot.services.yadisk_ingest import (
     SOURCE_KIND_24H,
     SOURCE_KIND_NO_MOVE,
 )
-from bot.services.sheets import update_tables
+from bot.services.sheets import update_tables, update_warehouse_delay_sheet
+from bot.services.warehouse_delay import (
+    aggregate_warehouse_delay_files,
+    build_warehouse_delay_sheet_rows,
+)
 
 logger = logging.getLogger(__name__)
 
 BUTTON_NO_MOVE = "📦 Без движения"
 BUTTON_24H = "⏱ 24 часа (обновить)"
+BUTTON_WAREHOUSE_DELAY = "📦 Задержка склада (сводная)"
 BUTTON_ADMIN = "🛠 Админ-панель"
 BUTTON_YA_LAST = "☁️ Взять с Я.Диска (последний файл)"
 BUTTON_YA_HELP = "📎 Инструкция по загрузке на Диск"
 
 EXPECTED_NO_MOVE = "no_move"
 EXPECTED_24H = "24h"
+WAREHOUSE_DELAY_TZ = ZoneInfo("Europe/Moscow")
 NO_MOVE_EXPORT_KEY = "no_move_export_mode"
 
 NO_MOVE_EXPORT_CALLBACK_PREFIX = "no_move_mode:"
@@ -106,6 +120,7 @@ class BotHandlers:
             [
                 [BUTTON_NO_MOVE],
                 [BUTTON_24H],
+                [BUTTON_WAREHOUSE_DELAY],
                 [BUTTON_YA_LAST],
                 [BUTTON_YA_HELP],
                 [BUTTON_ADMIN],
@@ -114,7 +129,7 @@ class BotHandlers:
         )
 
         logger.debug(
-            "YANDEX token prefix: %s; dirs: no_move=%s h24=%s",
+            "YANDEX token prefix: %s; dirs: no_move=%s h24=%s warehouse_delay=%s",
             (
                 (self.config.yandex_oauth_token[:8] + "***")
                 if self.config.yandex_oauth_token
@@ -122,6 +137,7 @@ class BotHandlers:
             ),
             self.config.yandex_no_move_dir,
             self.config.yandex_24h_dir,
+            self.config.yandex_warehouse_delay_dir,
         )
 
     def register(self, application: Application) -> None:
@@ -134,6 +150,12 @@ class BotHandlers:
         )
         application.add_handler(
             MessageHandler(filters.Regex(f"^{re.escape(BUTTON_24H)}$"), self.select_24h)
+        )
+        application.add_handler(
+            MessageHandler(
+                filters.Regex(f"^{re.escape(BUTTON_WAREHOUSE_DELAY)}$"),
+                self.handle_warehouse_delay_summary,
+            )
         )
         application.add_handler(
             MessageHandler(
@@ -167,6 +189,7 @@ class BotHandlers:
             "Привет! Я могу обработать Excel:\n"
             "• 📦 Без движения — основной файл с гофрой/идентификаторами.\n"
             "• ⏱ 24 часа — файл прогноза списаний, обновляет правую таблицу.\n"
+            "• 📦 Задержка склада (сводная) — забирает все файлы из папки Я.Диска и пишет отдельный лист.\n"
             "Выберите режим кнопкой снизу и пришлите файл (.xlsx) до 20 МБ или ссылку на файл (Яндекс.Диск/прямая).\n"
             "Между строками выгрузки будет пустая строка для удобного CTRL+A."
         )
@@ -282,6 +305,126 @@ class BotHandlers:
             reply_markup=self.reply_keyboard,
         )
 
+    async def handle_warehouse_delay_summary(
+        self, update: Update, context: CallbackContext
+    ) -> None:
+        user = update.effective_user
+        context.user_data["expected_upload"] = None
+
+        if self.processing_lock.locked():
+            await update.message.reply_text(
+                "Сейчас выполняется другая обработка. Повторите чуть позже."
+            )
+            return
+
+        if not self.config.yandex_oauth_token:
+            await update.message.reply_text(
+                "Яндекс OAuth токен не настроен. Обратитесь к администратору."
+            )
+            return
+
+        folder = (
+            self.config.yandex_warehouse_delay_dir
+            or "disk:/BOT_UPLOADS/warehouse_delay/"
+        )
+        status_message = await update.message.reply_text(
+            f"Начал обработку файлов из {folder}..."
+        )
+
+        async with self.processing_lock:
+            try:
+                files = await yadisk_list_files(
+                    self.config.yandex_oauth_token,
+                    folder,
+                    self.config.yandex_allowed_exts,
+                )
+            except YaDiskError as exc:
+                logger.warning(
+                    "Warehouse delay YaDisk list error user_id=%s username=%s: %s",
+                    user.id,
+                    user.username,
+                    exc,
+                )
+                await status_message.edit_text(f"Ошибка Яндекс.Диска: {exc}")
+                return
+            except Exception:
+                logger.exception(
+                    "Warehouse delay YaDisk list failed user_id=%s username=%s",
+                    user.id,
+                    user.username,
+                )
+                await status_message.edit_text(
+                    "Не удалось получить список файлов из папки Я.Диска."
+                )
+                return
+
+            try:
+                aggregation = await self._download_and_process_warehouse_delay_files(
+                    files
+                )
+                if aggregation.processed_files_count == 0:
+                    if aggregation.skipped_files:
+                        skipped = ", ".join(aggregation.skipped_files)
+                        await status_message.edit_text(
+                            "Не удалось прочитать ни одного файла.\n"
+                            f"Пропущенные файлы: {skipped}"
+                        )
+                    else:
+                        await status_message.edit_text(
+                            "Не удалось прочитать ни одного файла из папки."
+                        )
+                    return
+
+                sheet_rows = build_warehouse_delay_sheet_rows(
+                    aggregation,
+                    datetime.now(WAREHOUSE_DELAY_TZ).date(),
+                )
+                update_warehouse_delay_sheet(
+                    self.gc,
+                    self.config.spreadsheet_id,
+                    self.config.warehouse_delay_worksheet_name
+                    or "Выгрузка задержка склада",
+                    sheet_rows,
+                )
+
+                if aggregation.skipped_files:
+                    skipped_messages = "\n".join(
+                        [
+                            f'Файл "{filename}" непонятен, поэтому я его не прочитал. Остальные файлы обработал.'
+                            for filename in aggregation.skipped_files
+                        ]
+                    )
+                    await status_message.edit_text(
+                        "Сводная по задержке склада обновлена. "
+                        f"Прочитано файлов: {aggregation.processed_files_count}. "
+                        f"Пропущено файлов: {aggregation.skipped_files_count}.\n"
+                        f"{skipped_messages}"
+                    )
+                else:
+                    await status_message.edit_text(
+                        "Сводная по задержке склада обновлена. "
+                        f"Прочитано файлов: {aggregation.processed_files_count}. "
+                        f"Пропущено файлов: {aggregation.skipped_files_count}."
+                    )
+
+                logger.info(
+                    "Warehouse delay summary updated user_id=%s username=%s processed=%s skipped=%s worksheet=%s",
+                    user.id,
+                    user.username,
+                    aggregation.processed_files_count,
+                    aggregation.skipped_files_count,
+                    self.config.warehouse_delay_worksheet_name,
+                )
+            except Exception:
+                logger.exception(
+                    "Warehouse delay processing failed user_id=%s username=%s",
+                    user.id,
+                    user.username,
+                )
+                await status_message.edit_text(
+                    "Произошла ошибка при обработке сводной задержки склада. Подробности в логах."
+                )
+
     def _no_move_mode_keyboard(self) -> InlineKeyboardMarkup:
         buttons = [
             InlineKeyboardButton(NO_MOVE_EXPORT_BUTTONS[cb][1], callback_data=cb)
@@ -339,6 +482,47 @@ class BotHandlers:
         )
         return f'<a href="{escape(link)}">Ссылка на таблицу</a>'
 
+    async def _download_and_process_warehouse_delay_files(self, files: list[dict]):
+        with TemporaryDirectory(
+            prefix="warehouse_delay_", dir=self.workdir
+        ) as temp_dir:
+            download_dir = Path(temp_dir)
+            processable_files: list[tuple[str, str]] = []
+            skipped_files: list[str] = []
+
+            for index, file_info in enumerate(files, start=1):
+                filename = file_info.get("name") or f"file_{index}.xlsx"
+                source_path = file_info.get("path")
+                if not source_path:
+                    logger.warning(
+                        "Warehouse delay skipped file without path: %s",
+                        file_info,
+                    )
+                    continue
+
+                try:
+                    temp_path = download_dir / f"{index:03d}_{filename}"
+                    result = await yadisk_download_file(
+                        self.config.yandex_oauth_token,
+                        source_path,
+                        str(temp_path),
+                        max_bytes=self.config.yandex_max_mb * 1024 * 1024,
+                    )
+
+                    excel_path = maybe_extract_zip(result["path"], download_dir)
+                    processable_files.append((filename, excel_path))
+                except Exception:
+                    logger.exception(
+                        "Warehouse delay failed to download or extract file=%s path=%s",
+                        filename,
+                        source_path,
+                    )
+                    skipped_files.append(filename)
+
+            aggregation = aggregate_warehouse_delay_files(processable_files)
+            aggregation.skipped_files.extend(skipped_files)
+            return aggregation
+
     async def handle_yadisk_help(
         self, update: Update, context: CallbackContext
     ) -> None:
@@ -346,7 +530,9 @@ class BotHandlers:
             "Как загрузить файл на Яндекс.Диск и отправить боту:\n"
             f"- Для «без движения» положите файл в папку {self.config.yandex_no_move_dir or '/BOT_UPLOADS/no_move/'}\n"
             f"- Для «24 часа» — в папку {self.config.yandex_24h_dir or '/BOT_UPLOADS/24h/'}\n"
+            f"- Для «задержка склада (сводная)» — в папку {self.config.yandex_warehouse_delay_dir or 'disk:/BOT_UPLOADS/warehouse_delay/'}\n"
             "Бот возьмёт последний Excel/zip из выбранной папки.\n"
+            "Для режима сводной задержки отдельная кнопка сама прочитает все файлы из папки.\n"
             "Выберите режим, затем нажмите «☁️ Взять с Я.Диска (последний файл)»."
         )
         await update.message.reply_text(text, reply_markup=self.reply_keyboard)
@@ -460,9 +646,7 @@ class BotHandlers:
                 )
                 return
             if expected == EXPECTED_NO_MOVE:
-                export_mode = await self._ensure_no_move_mode_selected(
-                    update, context
-                )
+                export_mode = await self._ensure_no_move_mode_selected(update, context)
                 if not export_mode:
                     return
             await self._process_url_file(update, context, text, expected)
@@ -719,7 +903,11 @@ class BotHandlers:
                 )
 
                 export_label = next(
-                    (label for mode, label in NO_MOVE_EXPORT_BUTTONS.values() if mode == export_mode),
+                    (
+                        label
+                        for mode, label in NO_MOVE_EXPORT_BUTTONS.values()
+                        if mode == export_mode
+                    ),
                     export_mode,
                 )
                 safe_label = escape(export_label.lower())
@@ -979,9 +1167,7 @@ class BotHandlers:
                 source_kind = normalized
         return limit, source_kind
 
-    def _parse_required_int_arg(
-        self, args: list[str], usage: str
-    ) -> int | None:
+    def _parse_required_int_arg(self, args: list[str], usage: str) -> int | None:
         if not args:
             return None
         try:

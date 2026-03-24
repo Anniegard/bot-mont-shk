@@ -20,8 +20,10 @@ class Config:
     yandex_oauth_token: str | None = None
     yandex_no_move_dir: str | None = None
     yandex_24h_dir: str | None = None
+    yandex_warehouse_delay_dir: str | None = None
     yandex_allowed_exts: Tuple[str, ...] = (".xlsx", ".xls", ".zip")
     yandex_max_mb: int = 200
+    warehouse_delay_worksheet_name: str | None = None
 
 
 def _resolve_credentials_path(path_value: str, root_dir: Path) -> Path:
@@ -94,12 +96,18 @@ def load_config(env_path: str | None = None) -> Config:
     yandex_oauth_token = os.getenv("YANDEX_OAUTH_TOKEN") or None
     yandex_no_move_dir = os.getenv("YANDEX_NO_MOVE_DIR") or "/BOT_UPLOADS/no_move/"
     yandex_24h_dir = os.getenv("YANDEX_24H_DIR") or "/BOT_UPLOADS/24h/"
+    yandex_warehouse_delay_dir = (
+        os.getenv("YANDEX_WAREHOUSE_DELAY_DIR") or "disk:/BOT_UPLOADS/warehouse_delay/"
+    )
     yandex_allowed_exts = tuple(
         e.strip()
         for e in (os.getenv("YANDEX_ALLOWED_EXTS") or ".xlsx,.xls,.zip").split(",")
         if e.strip()
     )
     yandex_max_mb = int(os.getenv("YANDEX_MAX_MB") or 200)
+    warehouse_delay_worksheet_name = (
+        os.getenv("WAREHOUSE_DELAY_WORKSHEET_NAME") or "Выгрузка задержка склада"
+    )
 
     missing = []
     if not telegram_token:
@@ -131,6 +139,8 @@ def load_config(env_path: str | None = None) -> Config:
         yandex_oauth_token=yandex_oauth_token,
         yandex_no_move_dir=yandex_no_move_dir,
         yandex_24h_dir=yandex_24h_dir,
+        yandex_warehouse_delay_dir=yandex_warehouse_delay_dir,
         yandex_allowed_exts=yandex_allowed_exts,
         yandex_max_mb=yandex_max_mb,
+        warehouse_delay_worksheet_name=warehouse_delay_worksheet_name,
     )

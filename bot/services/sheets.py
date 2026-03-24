@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 
 import gspread
 from google.oauth2.service_account import Credentials
+from gspread.utils import rowcol_to_a1
 
 from bot.constants import CASE_ID_COLUMN_NAME
 
@@ -50,9 +51,7 @@ def _normalize_export_rows(rows: List[List], width: int) -> list[list[str]]:
         padded_row = list(row[:width])
         if len(padded_row) < width:
             padded_row.extend([""] * (width - len(padded_row)))
-        normalized_rows.append(
-            [_normalize_export_cell(value) for value in padded_row]
-        )
+        normalized_rows.append([_normalize_export_cell(value) for value in padded_row])
     return normalized_rows
 
 
@@ -157,6 +156,34 @@ def get_export_worksheet(
     return spreadsheet.sheet1
 
 
+def get_or_create_worksheet(
+    client: gspread.Client,
+    spreadsheet_id: str,
+    worksheet_name: str,
+    *,
+    min_rows: int = 100,
+    min_cols: int = 26,
+) -> gspread.Worksheet:
+    spreadsheet = open_spreadsheet(client, spreadsheet_id)
+    try:
+        worksheet = spreadsheet.worksheet(worksheet_name)
+    except gspread.WorksheetNotFound:
+        logging.info("Creating worksheet %s", worksheet_name)
+        worksheet = spreadsheet.add_worksheet(
+            title=worksheet_name,
+            rows=max(min_rows, 1),
+            cols=max(min_cols, 1),
+        )
+
+    if worksheet.row_count < min_rows or worksheet.col_count < min_cols:
+        worksheet.resize(
+            rows=max(worksheet.row_count, min_rows),
+            cols=max(worksheet.col_count, min_cols),
+        )
+
+    return worksheet
+
+
 def _ensure_worksheet_columns(
     worksheet: gspread.Worksheet, required_columns: int
 ) -> None:
@@ -168,7 +195,7 @@ def _update_no_move_export_tab(
     worksheet: gspread.Worksheet,
     left_rows: List[List],
 ) -> None:
-    start_row = 5  # rows 1-4 reserved (headers + empty row 4)
+    start_row = 5
     normalized_left_rows = _normalize_export_rows(left_rows, len(LEFT_COLUMNS))
     _ensure_worksheet_columns(worksheet, 5)
 
@@ -201,7 +228,7 @@ def _update_24h_export_tab(
     right_rows: List[List],
     right_meta: Optional[dict],
 ) -> None:
-    start_row = 5  # rows 1-4 reserved (headers + empty row 4)
+    start_row = 5
     normalized_right_rows = _normalize_export_rows(right_rows, len(RIGHT_COLUMNS))
     _ensure_worksheet_columns(worksheet, 16)
 
@@ -254,4 +281,39 @@ def update_tables(
         getattr(worksheet, "title", "sheet1"),
         len(left_rows),
         len(right_rows),
+    )
+
+
+def update_warehouse_delay_sheet(
+    client: gspread.Client,
+    spreadsheet_id: str,
+    worksheet_name: str,
+    rows: List[List[Any]],
+) -> None:
+    required_rows = max(len(rows), 1)
+    required_cols = max((len(row) for row in rows), default=1)
+    worksheet = get_or_create_worksheet(
+        client,
+        spreadsheet_id,
+        worksheet_name,
+        min_rows=required_rows,
+        min_cols=required_cols,
+    )
+
+    worksheet.clear()
+    if rows:
+        normalized_rows = [
+            [_normalize_export_cell(value) for value in row] for row in rows
+        ]
+        end_cell = rowcol_to_a1(len(normalized_rows), required_cols)
+        worksheet.update(
+            f"A1:{end_cell}",
+            normalized_rows,
+            value_input_option="USER_ENTERED",
+        )
+
+    logging.info(
+        "Warehouse delay worksheet updated: worksheet=%s rows=%s",
+        worksheet.title,
+        len(rows),
     )
