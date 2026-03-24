@@ -191,6 +191,13 @@ def _ensure_worksheet_columns(
         worksheet.add_cols(required_columns - worksheet.col_count)
 
 
+def _get_filled_value_range_size(worksheet: gspread.Worksheet) -> tuple[int, int]:
+    values = worksheet.get_all_values()
+    if not values:
+        return 0, 0
+    return len(values), max((len(row) for row in values), default=0)
+
+
 def _update_no_move_export_tab(
     worksheet: gspread.Worksheet,
     left_rows: List[List],
@@ -300,7 +307,12 @@ def update_warehouse_delay_sheet(
         min_cols=required_cols,
     )
 
-    worksheet.clear()
+    existing_rows, existing_cols = _get_filled_value_range_size(worksheet)
+    clear_rows = max(existing_rows, len(rows), 1)
+    clear_cols = max(existing_cols, required_cols, 1)
+    clear_end_cell = rowcol_to_a1(clear_rows, clear_cols)
+    worksheet.batch_clear([f"A1:{clear_end_cell}"])
+
     if rows:
         normalized_rows = [
             [_normalize_export_cell(value) for value in row] for row in rows

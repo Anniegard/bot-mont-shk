@@ -2,8 +2,11 @@ from __future__ import annotations
 
 from datetime import date
 
+import gspread
 import pandas as pd
+import pytest
 
+from bot.services.sheets import update_warehouse_delay_sheet
 from bot.services.warehouse_delay import (
     CANONICAL_ROW_ORDER,
     SHEET_HEADERS,
@@ -15,9 +18,89 @@ from bot.services.warehouse_delay import (
     make_empty_aggregation_map,
     map_filename_to_canonical_row,
     normalize_filename,
+    parse_delay_hours,
+    resolve_columns,
     sum_total_row,
     aggregate_warehouse_delay_files,
 )
+
+
+class FakeWarehouseDelayWorksheet:
+    def __init__(
+        self,
+        values: list[list[str]],
+        *,
+        title: str = "Выгрузка задержка склада",
+        row_count: int = 100,
+        col_count: int = 16,
+    ) -> None:
+        self._values = [list(row) for row in values]
+        self.title = title
+        self.row_count = row_count
+        self.col_count = col_count
+        self.batch_clear_calls: list[list[str]] = []
+        self.update_calls: list[tuple[str, list[list[str]], str | None]] = []
+        self.resize_calls: list[tuple[int, int]] = []
+        self.clear_calls = 0
+
+    def get_all_values(self) -> list[list[str]]:
+        return [list(row) for row in self._values]
+
+    def batch_clear(self, ranges: list[str]) -> None:
+        self.batch_clear_calls.append(ranges)
+
+    def update(
+        self,
+        cell_range: str,
+        values: list[list[str]],
+        value_input_option: str | None = None,
+    ) -> None:
+        self.update_calls.append((cell_range, values, value_input_option))
+
+    def resize(self, rows: int, cols: int) -> None:
+        self.resize_calls.append((rows, cols))
+        self.row_count = rows
+        self.col_count = cols
+
+    def clear(self) -> None:
+        self.clear_calls += 1
+
+
+class FakeWarehouseDelaySpreadsheet:
+    def __init__(self, worksheet: FakeWarehouseDelayWorksheet) -> None:
+        self.sheet1 = worksheet
+        self._worksheets = {worksheet.title: worksheet}
+        self.add_worksheet_calls: list[tuple[str, int, int]] = []
+        self.delete_worksheet_calls: list[FakeWarehouseDelayWorksheet] = []
+
+    def worksheet(self, name: str) -> FakeWarehouseDelayWorksheet:
+        if name not in self._worksheets:
+            raise gspread.WorksheetNotFound(name)
+        return self._worksheets[name]
+
+    def add_worksheet(
+        self, title: str, rows: int, cols: int
+    ) -> FakeWarehouseDelayWorksheet:
+        worksheet = FakeWarehouseDelayWorksheet(
+            [[]],
+            title=title,
+            row_count=rows,
+            col_count=cols,
+        )
+        self._worksheets[title] = worksheet
+        self.add_worksheet_calls.append((title, rows, cols))
+        return worksheet
+
+    def delete_worksheet(self, worksheet: FakeWarehouseDelayWorksheet) -> None:
+        self.delete_worksheet_calls.append(worksheet)
+
+
+class FakeWarehouseDelayClient:
+    def __init__(self, spreadsheet: FakeWarehouseDelaySpreadsheet) -> None:
+        self._spreadsheet = spreadsheet
+
+    def open_by_key(self, spreadsheet_id: str) -> FakeWarehouseDelaySpreadsheet:
+        return self._spreadsheet
 
 
 def test_normalize_filename_ignores_extension_hyphen_and_spacing() -> None:
@@ -48,6 +131,34 @@ def test_bucketize_hours_uses_expected_boundaries() -> None:
     assert bucketize_hours(12) == ">12ч"
     assert bucketize_hours(79.99) == ">60ч"
     assert bucketize_hours(200) == ">200ч"
+
+
+def test_resolve_columns_supports_vremya_prostoya_alias() -> None:
+    df = pd.DataFrame(columns=["Время простоя", "МХ обработки", "Склад"])
+
+    mapping = resolve_columns(df)
+
+    assert mapping.hours == "Время простоя"
+    assert mapping.mx_processing == "МХ обработки"
+    assert mapping.warehouse == "Склад"
+
+
+@pytest.mark.parametrize(
+    ("raw_value", "expected_hours"),
+    [
+        ("45:57", 45 + 57 / 60),
+        ("46:42", 46 + 42 / 60),
+        ("50:4", 50 + 4 / 60),
+        ("16:33", 16 + 33 / 60),
+        ("86:42", 86 + 42 / 60),
+        ("5:45", 5 + 45 / 60),
+        ("12:30:00", 12.5),
+    ],
+)
+def test_parse_delay_hours_supports_hh_mm_and_hh_mm_ss_formats(
+    raw_value: str, expected_hours: float
+) -> None:
+    assert parse_delay_hours(raw_value) == pytest.approx(expected_hours)
 
 
 def test_without_assignment_filter() -> None:
@@ -166,3 +277,37 @@ def test_build_sheet_rows_produces_two_blocks_with_totals() -> None:
     assert rows[first_total_row_index + 2] == []
     assert rows[second_block_title_index] == ["24.03.2026 без задания"]
     assert rows[second_block_title_index + 1] == SHEET_HEADERS
+
+
+def test_update_warehouse_delay_sheet_preserves_worksheet_and_clears_only_values() -> None:
+    worksheet = FakeWarehouseDelayWorksheet(
+        [
+            ["old title", "old subtitle", "old extra"],
+            ["old header", "bucket", "total"],
+            ["warehouse", "7", "7"],
+        ]
+    )
+    spreadsheet = FakeWarehouseDelaySpreadsheet(worksheet)
+    client = FakeWarehouseDelayClient(spreadsheet)
+
+    update_warehouse_delay_sheet(
+        client=client,
+        spreadsheet_id="spreadsheet-id",
+        worksheet_name=worksheet.title,
+        rows=[
+            ["24.03.2026"],
+            ["Склад", "Общее количество"],
+        ],
+    )
+
+    assert worksheet.batch_clear_calls == [["A1:C3"]]
+    assert worksheet.update_calls == [
+        (
+            "A1:B2",
+            [["24.03.2026"], ["Склад", "Общее количество"]],
+            "USER_ENTERED",
+        )
+    ]
+    assert worksheet.clear_calls == 0
+    assert spreadsheet.add_worksheet_calls == []
+    assert spreadsheet.delete_worksheet_calls == []

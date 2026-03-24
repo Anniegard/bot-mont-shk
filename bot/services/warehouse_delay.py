@@ -66,6 +66,12 @@ HOURS_COLUMN_ALIASES = [
     "час задержки",
     "время задержки ч",
     "время задержки, ч",
+    "Время простоя",
+    "время простоя",
+    "Простой",
+    "простой",
+    "Время простоя, ч",
+    "Время простоя ч",
 ]
 WAREHOUSE_COLUMN_ALIASES = [
     "склад",
@@ -286,6 +292,13 @@ def parse_delay_hours(value: Any) -> float | None:
     compact_text = text.replace(" ", "").replace(",", ".")
     if re.fullmatch(r"[+-]?\d+(?:\.\d+)?", compact_text):
         return float(compact_text)
+
+    if re.fullmatch(r"\d{1,4}:\d{1,2}(?::\d{1,2})?", compact_text):
+        parts = [int(part) for part in compact_text.split(":")]
+        hours = parts[0]
+        minutes = parts[1]
+        seconds = parts[2] if len(parts) == 3 else 0
+        return hours + (minutes / 60) + (seconds / 3600)
 
     if ":" in text or "day" in text.lower():
         parsed_timedelta = pd.to_timedelta(text, errors="coerce")
