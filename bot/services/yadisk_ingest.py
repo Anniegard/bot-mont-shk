@@ -31,6 +31,8 @@ logger = logging.getLogger(__name__)
 
 SOURCE_KIND_NO_MOVE = "no_move"
 SOURCE_KIND_24H = "24h"
+ENABLE_ITEM_NAME_AUTO_MATCH = False
+RAW_INGEST_PROGRESS_LOG_EVERY_ROWS = 200
 
 _SPACE_RE = re.compile(r"\s+")
 _EMPTY_TEXT_VALUES = {"", "none", "null", "nan"}
@@ -316,6 +318,7 @@ def match_raw_row_to_case(
     shk: str | None = None,
     tare_transfer: str | None = None,
     item_name: str | None = None,
+    enable_item_name_auto_match: bool = ENABLE_ITEM_NAME_AUTO_MATCH,
     connection: sqlite3.Connection | None = None,
     db_path: str | Path | None = None,
 ) -> dict[str, Any]:
@@ -367,6 +370,14 @@ def match_raw_row_to_case(
 
     normalized_item_name = normalize_empty_value(item_name)
     if normalized_item_name:
+        if not enable_item_name_auto_match:
+            return {
+                "matched_case_id": None,
+                "match_method": "none",
+                "match_confidence": "none",
+                "link_decision_reason": "item_name auto-match skipped in ingest fast path",
+                "item_name_auto_match_skipped": True,
+            }
         candidates = find_case_candidates_by_item_name(
             normalized_item_name,
             limit=3,
@@ -446,6 +457,11 @@ def ingest_yadisk_rows(
     rows_read = 0
     rows_written = 0
     rows_linked = 0
+    rows_deduped = 0
+    rows_matched_by_shk = 0
+    rows_matched_by_tare_transfer = 0
+    rows_skipped_item_name_auto_match = 0
+    item_name_skip_logged = False
     source_identity = _resolve_source_identity(file_info)
     source_file_name = normalize_empty_value(file_info.get("filename"))
 
@@ -504,6 +520,7 @@ def ingest_yadisk_rows(
                     )
                     continue
                 raw_row_id = int(existing_row["id"])
+                rows_deduped += 1
             else:
                 rows_written += 1
 
@@ -511,8 +528,24 @@ def ingest_yadisk_rows(
                 shk=normalized_row["shk"],
                 tare_transfer=normalized_row["tare_transfer"],
                 item_name=normalized_row["item_name"],
+                enable_item_name_auto_match=ENABLE_ITEM_NAME_AUTO_MATCH,
                 connection=conn,
             )
+            if match_result.get("matched_case_id"):
+                if match_result.get("match_method") == "shk":
+                    rows_matched_by_shk += 1
+                elif match_result.get("match_method") == "tare_transfer":
+                    rows_matched_by_tare_transfer += 1
+            elif match_result.get("item_name_auto_match_skipped"):
+                rows_skipped_item_name_auto_match += 1
+                if not item_name_skip_logged:
+                    logger.info(
+                        "Raw ingest fast path: item_name auto-match is disabled; unresolved rows will stay pending for manual review. kind=%s source=%s import_id=%s",
+                        source_kind,
+                        source_identity,
+                        import_id,
+                    )
+                    item_name_skip_logged = True
             should_link = inserted_row_id is not None
             if existing_row is not None:
                 should_link = any(
@@ -543,6 +576,34 @@ def ingest_yadisk_rows(
                 if updated:
                     rows_linked += 1
 
+            if rows_read % RAW_INGEST_PROGRESS_LOG_EVERY_ROWS == 0:
+                logger.info(
+                    "Raw ingest progress: kind=%s source=%s import_id=%s rows_processed=%s rows_inserted=%s rows_matched_by_shk=%s rows_matched_by_tare_transfer=%s rows_skipped_auto_match=%s rows_deduped=%s",
+                    source_kind,
+                    source_identity,
+                    import_id,
+                    rows_read,
+                    rows_written,
+                    rows_matched_by_shk,
+                    rows_matched_by_tare_transfer,
+                    rows_skipped_item_name_auto_match,
+                    rows_deduped,
+                )
+
+        logger.info(
+            "Raw ingest summary: kind=%s source=%s import_id=%s rows_processed=%s rows_inserted=%s rows_matched_by_shk=%s rows_matched_by_tare_transfer=%s rows_skipped_auto_match=%s rows_deduped=%s rows_linked=%s",
+            source_kind,
+            source_identity,
+            import_id,
+            rows_read,
+            rows_written,
+            rows_matched_by_shk,
+            rows_matched_by_tare_transfer,
+            rows_skipped_item_name_auto_match,
+            rows_deduped,
+            rows_linked,
+        )
+
         finish_import(
             import_id=import_id,
             status="success",
@@ -558,6 +619,10 @@ def ingest_yadisk_rows(
             "rows_read": rows_read,
             "rows_written": rows_written,
             "rows_linked": rows_linked,
+            "rows_deduped": rows_deduped,
+            "rows_matched_by_shk": rows_matched_by_shk,
+            "rows_matched_by_tare_transfer": rows_matched_by_tare_transfer,
+            "rows_skipped_item_name_auto_match": rows_skipped_item_name_auto_match,
             "source_name": source_file_name,
             "source_path": source_identity,
         }

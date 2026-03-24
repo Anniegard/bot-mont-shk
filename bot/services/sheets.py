@@ -9,11 +9,7 @@ from zoneinfo import ZoneInfo
 import gspread
 from google.oauth2.service_account import Credentials
 
-from bot.constants import (
-    CASE_ID_COLUMN_NAME,
-    EXPORT_24H_SHEET_NAME,
-    EXPORT_NO_MOVE_SHEET_NAME,
-)
+from bot.constants import CASE_ID_COLUMN_NAME
 
 SCOPE = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -34,8 +30,6 @@ RIGHT_COLUMNS = [
 META_LABEL = "Актуальность файла 24ч:"
 MOSCOW_TZ = ZoneInfo("Europe/Moscow")
 UTC_TZ = ZoneInfo("UTC")
-EXPORT_WORKSHEET_ROWS = 1000
-EXPORT_WORKSHEET_COLS = 16
 
 
 def _normalize_sheet_cell(value: Any) -> str | None:
@@ -129,20 +123,21 @@ def _format_meta_uploaded_at(meta: Optional[dict]) -> str:
         return str(uploaded)
 
 
-def get_or_create_worksheet(
+def get_export_worksheet(
     client: gspread.Client,
     spreadsheet_id: str,
-    worksheet_name: str,
+    worksheet_name: Optional[str],
 ):
     spreadsheet = open_spreadsheet(client, spreadsheet_id)
-    try:
-        return spreadsheet.worksheet(worksheet_name)
-    except gspread.WorksheetNotFound:
-        return spreadsheet.add_worksheet(
-            title=worksheet_name,
-            rows=EXPORT_WORKSHEET_ROWS,
-            cols=EXPORT_WORKSHEET_COLS,
-        )
+    if worksheet_name:
+        try:
+            return spreadsheet.worksheet(worksheet_name)
+        except gspread.WorksheetNotFound:
+            logging.info(
+                "Export worksheet %s not found; falling back to sheet1",
+                worksheet_name,
+            )
+    return spreadsheet.sheet1
 
 
 def _ensure_worksheet_columns(
@@ -159,7 +154,7 @@ def _update_no_move_export_tab(
     start_row = 5  # rows 1-4 reserved (headers + empty row 4)
     _ensure_worksheet_columns(worksheet, 5)
 
-    left_existing = max(len(worksheet.col_values(2)) - (start_row - 1), 0)  # column B
+    left_existing = max(len(worksheet.col_values(2)) - (start_row - 1), 0)
     if left_existing:
         worksheet.batch_clear([f"B{start_row}:E{start_row + left_existing - 1}"])
 
@@ -191,9 +186,7 @@ def _update_24h_export_tab(
     start_row = 5  # rows 1-4 reserved (headers + empty row 4)
     _ensure_worksheet_columns(worksheet, 16)
 
-    right_existing = max(
-        len(worksheet.col_values(11)) - (start_row - 1), 0
-    )  # column K
+    right_existing = max(len(worksheet.col_values(11)) - (start_row - 1), 0)
     if right_existing:
         worksheet.batch_clear([f"K{start_row}:O{start_row + right_existing - 1}"])
 
@@ -222,32 +215,24 @@ def _update_24h_export_tab(
 def update_tables(
     client: gspread.Client,
     spreadsheet_id: str,
+    worksheet_name: Optional[str],
     left_rows: List[List],
     right_rows: List[List],
     right_meta: Optional[dict],
     skip_left: bool = False,
     skip_right: bool = False,
 ) -> None:
+    worksheet = get_export_worksheet(client, spreadsheet_id, worksheet_name)
+
     if not skip_left:
-        no_move_worksheet = get_or_create_worksheet(
-            client,
-            spreadsheet_id,
-            EXPORT_NO_MOVE_SHEET_NAME,
-        )
-        _update_no_move_export_tab(no_move_worksheet, left_rows)
+        _update_no_move_export_tab(worksheet, left_rows)
 
     if not skip_right:
-        export_24h_worksheet = get_or_create_worksheet(
-            client,
-            spreadsheet_id,
-            EXPORT_24H_SHEET_NAME,
-        )
-        _update_24h_export_tab(export_24h_worksheet, right_rows, right_meta)
+        _update_24h_export_tab(worksheet, right_rows, right_meta)
 
     logging.info(
-        "Экспортные вкладки обновлены: no_move_sheet=%s rows=%s, export_24h_sheet=%s rows=%s",
-        EXPORT_NO_MOVE_SHEET_NAME,
+        "Экспорт обновлен в worksheet=%s: left_rows=%s right_rows=%s",
+        getattr(worksheet, "title", "sheet1"),
         len(left_rows),
-        EXPORT_24H_SHEET_NAME,
         len(right_rows),
     )

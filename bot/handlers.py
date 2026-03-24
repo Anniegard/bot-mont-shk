@@ -47,7 +47,6 @@ from bot.services.yadisk import YaDiskError, yadisk_download_file, yadisk_list_l
 from bot.services.yadisk_ingest import (
     SOURCE_KIND_24H,
     SOURCE_KIND_NO_MOVE,
-    ingest_yadisk_rows,
 )
 from bot.services.raw_review import (
     get_raw_row_details,
@@ -146,18 +145,6 @@ class BotHandlers:
     def register(self, application: Application) -> None:
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("admin", self.admin))
-        application.add_handler(CommandHandler("case_help", self.case_help))
-        application.add_handler(CommandHandler("case", self.case_search))
-        application.add_handler(CommandHandler("case_raw", self.case_raw))
-        application.add_handler(CommandHandler("raw_find", self.raw_find))
-        application.add_handler(CommandHandler("raw_help", self.raw_help))
-        application.add_handler(CommandHandler("raw_queue", self.raw_queue))
-        application.add_handler(CommandHandler("raw_show", self.raw_show))
-        application.add_handler(CommandHandler("raw_candidates", self.raw_candidates))
-        application.add_handler(CommandHandler("raw_link", self.raw_link))
-        application.add_handler(CommandHandler("raw_unlink", self.raw_unlink))
-        application.add_handler(CommandHandler("raw_ignore", self.raw_ignore))
-        application.add_handler(CommandHandler("raw_pending", self.raw_pending))
         application.add_handler(
             MessageHandler(
                 filters.Regex(f"^{re.escape(BUTTON_NO_MOVE)}$"), self.select_no_move
@@ -218,7 +205,7 @@ class BotHandlers:
             [InlineKeyboardButton("Остановить бота", callback_data="stop_bot")],
         ]
         await update.message.reply_text(
-            "Выберите действие.\nДля разбора raw-строк: /raw_help",
+            "Выберите действие.",
             reply_markup=InlineKeyboardMarkup(admin_keyboard),
         )
 
@@ -945,32 +932,14 @@ class BotHandlers:
         file_info: dict,
         source_kind: str,
     ) -> dict | None:
-        try:
-            summary = ingest_yadisk_rows(
-                file_path=file_path,
-                source_kind=source_kind,
-                file_info=file_info,
-                db_path=self.config.db_path,
-            )
-            logger.info(
-                "Raw ingest complete: kind=%s source=%s path=%s rows_read=%s rows_written=%s rows_linked=%s import_id=%s",
-                source_kind,
-                file_info.get("source"),
-                summary.get("source_path"),
-                summary.get("rows_read"),
-                summary.get("rows_written"),
-                summary.get("rows_linked"),
-                summary.get("import_id"),
-            )
-            return summary
-        except Exception:
-            logger.exception(
-                "Raw ingest failed: kind=%s source=%s filename=%s",
-                source_kind,
-                file_info.get("source"),
-                file_info.get("filename"),
-            )
-            return None
+        logger.info(
+            "Runtime DB features disabled; skipping raw ingest: kind=%s source=%s filename=%s path=%s",
+            source_kind,
+            file_info.get("source"),
+            file_info.get("filename"),
+            file_path,
+        )
+        return None
 
     async def _handle_no_move_file(
         self,
@@ -1020,6 +989,7 @@ class BotHandlers:
                 update_tables(
                     self.gc,
                     self.config.spreadsheet_id,
+                    self.config.worksheet_name,
                     rows,
                     right_rows,
                     meta,
@@ -1119,6 +1089,7 @@ class BotHandlers:
                 update_tables(
                     self.gc,
                     self.config.spreadsheet_id,
+                    self.config.worksheet_name,
                     left_rows=[],
                     right_rows=right_rows,
                     right_meta=meta.__dict__,

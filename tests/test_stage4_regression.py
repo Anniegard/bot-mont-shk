@@ -12,7 +12,7 @@ from bot.db import (
 from bot.services import case_sync
 from bot.services.case_sync import REQUIRED_FIELD_LABELS, read_master_sheet_rows
 from bot.services.sheets import update_tables
-from bot.services.yadisk_ingest import match_raw_row_to_case
+from bot.services.yadisk_ingest import ENABLE_ITEM_NAME_AUTO_MATCH, match_raw_row_to_case
 
 
 def _row_count(connection, table_name: str) -> int:
@@ -169,7 +169,7 @@ def test_raw_yadisk_rows_dedupe_for_same_source_and_hash(connection) -> None:
     assert _row_count(connection, "raw_yadisk_rows") == 1
 
 
-def test_matching_uses_shk_then_tare_transfer_then_item_name(connection, seed_case) -> None:
+def test_matching_uses_shk_then_tare_transfer_in_fast_path(connection, seed_case) -> None:
     seed_case("case-by-name", item_name="Target name")
     seed_case("case-by-tare", tare_transfer="TARE-1")
     seed_case("case-by-shk", shk="SHK-1")
@@ -186,12 +186,6 @@ def test_matching_uses_shk_then_tare_transfer_then_item_name(connection, seed_ca
         item_name="Target name",
         connection=connection,
     )
-    by_name = match_raw_row_to_case(
-        shk="missing",
-        tare_transfer="missing",
-        item_name="Target name",
-        connection=connection,
-    )
 
     assert by_shk["matched_case_id"] == "case-by-shk"
     assert by_shk["match_method"] == "shk"
@@ -201,9 +195,38 @@ def test_matching_uses_shk_then_tare_transfer_then_item_name(connection, seed_ca
     assert by_tare["match_method"] == "tare_transfer"
     assert by_tare["match_confidence"] == "medium"
 
-    assert by_name["matched_case_id"] == "case-by-name"
-    assert by_name["match_method"] == "item_name"
-    assert by_name["match_confidence"] == "low"
+
+def test_matching_skips_item_name_in_default_ingest_fast_path(connection, seed_case) -> None:
+    seed_case("case-by-name", item_name="Target name")
+
+    result = match_raw_row_to_case(
+        shk="missing",
+        tare_transfer="missing",
+        item_name="Target name",
+        connection=connection,
+    )
+
+    assert result["matched_case_id"] is None
+    assert result["match_method"] == "none"
+    assert result["match_confidence"] == "none"
+    assert result["link_decision_reason"] == "item_name auto-match skipped in ingest fast path"
+
+
+def test_matching_can_reenable_item_name_via_flag(connection, seed_case) -> None:
+    seed_case("case-by-name", item_name="Target name")
+
+    result = match_raw_row_to_case(
+        shk="missing",
+        tare_transfer="missing",
+        item_name="Target name",
+        enable_item_name_auto_match=True,
+        connection=connection,
+    )
+
+    assert ENABLE_ITEM_NAME_AUTO_MATCH is False
+    assert result["matched_case_id"] == "case-by-name"
+    assert result["match_method"] == "item_name"
+    assert result["match_confidence"] == "low"
 
 
 def test_matching_marks_ambiguous_candidates_without_autolink(connection, seed_case) -> None:
@@ -262,46 +285,47 @@ def test_existing_case_id_is_preserved_without_regeneration(monkeypatch) -> None
     assert worksheet.add_cols_calls == []
 
 
-def test_update_tables_routes_exports_to_dedicated_tabs_and_creates_missing_tabs() -> None:
-    master = FakeWorksheet([[]], title="Разбор потерь исх. потока", col_count=16)
-    spreadsheet = FakeSpreadsheet([master])
+def test_update_tables_writes_both_blocks_into_named_worksheet() -> None:
+    master = FakeWorksheet([[]], title="Master", col_count=16)
+    export = FakeWorksheet([[]], title="Export", col_count=16)
+    spreadsheet = FakeSpreadsheet([master, export])
     client = FakeClient(spreadsheet)
 
     update_tables(
         client=client,
         spreadsheet_id="spreadsheet-id",
+        worksheet_name="Export",
         left_rows=[["гофра", "sku-1", "1", "2500"]],
         right_rows=[["тара-1", "sku-1", "1", "2500", "2026-03-14 10:00"]],
         right_meta={"uploaded_at": "2026-03-14T07:00:00+00:00"},
     )
 
-    assert spreadsheet.add_worksheet_calls == [
-        ("Выгрузка без движения", 1000, 16),
-        ("Выгрузка 24ч", 1000, 16),
+    assert spreadsheet.add_worksheet_calls == []
+    assert [entry["range"] for entry in export.batch_update_calls[0]] == [
+        "B2:E2",
+        "B3:E3",
+        "B5:E5",
     ]
-
-    no_move_sheet = spreadsheet.worksheet("Выгрузка без движения")
-    export_24h_sheet = spreadsheet.worksheet("Выгрузка 24ч")
-
-    no_move_ranges = [entry["range"] for entry in no_move_sheet.batch_update_calls[0]]
-    export_24h_ranges = [
-        entry["range"] for entry in export_24h_sheet.batch_update_calls[0]
+    assert [entry["range"] for entry in export.batch_update_calls[1]] == [
+        "K2:O2",
+        "K3:O3",
+        "P2",
+        "P3",
+        "K5:O5",
     ]
-
-    assert no_move_ranges == ["B2:E2", "B3:E3", "B5:E5"]
-    assert export_24h_ranges == ["K2:O2", "K3:O3", "P2", "P3", "K5:O5"]
     assert master.batch_update_calls == []
     assert master.batch_clear_calls == []
 
 
-def test_update_tables_right_only_does_not_touch_no_move_tab() -> None:
-    master = FakeWorksheet([[]], title="Разбор потерь исх. потока", col_count=16)
+def test_update_tables_right_only_falls_back_to_sheet1_when_named_worksheet_missing() -> None:
+    master = FakeWorksheet([[]], title="Master", col_count=16)
     spreadsheet = FakeSpreadsheet([master])
     client = FakeClient(spreadsheet)
 
     update_tables(
         client=client,
         spreadsheet_id="spreadsheet-id",
+        worksheet_name="Missing worksheet",
         left_rows=[],
         right_rows=[["тара-1", "sku-1", "1", "2500", "2026-03-14 10:00"]],
         right_meta={"uploaded_at": "2026-03-14T07:00:00+00:00"},
@@ -309,5 +333,11 @@ def test_update_tables_right_only_does_not_touch_no_move_tab() -> None:
         skip_right=False,
     )
 
-    assert spreadsheet.add_worksheet_calls == [("Выгрузка 24ч", 1000, 16)]
-    assert master.batch_update_calls == []
+    assert spreadsheet.add_worksheet_calls == []
+    assert [entry["range"] for entry in master.batch_update_calls[0]] == [
+        "K2:O2",
+        "K3:O3",
+        "P2",
+        "P3",
+        "K5:O5",
+    ]
