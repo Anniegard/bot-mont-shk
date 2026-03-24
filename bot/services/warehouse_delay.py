@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any, Iterable
@@ -46,6 +46,13 @@ BUCKETS: list[tuple[str, float, float | None]] = [
 BUCKET_LABELS = [label for label, _, _ in BUCKETS]
 TOTAL_COLUMN = "Общее количество"
 SHEET_HEADERS = ["Склад", *BUCKET_LABELS, TOTAL_COLUMN]
+TOP_WITHOUT_ASSIGNMENT_TITLE = "Топ 10 тар без задания"
+TOP_WITHOUT_ASSIGNMENT_HEADERS = [
+    "Тара",
+    "Время простоя",
+    "МХ обработки",
+    "Кол-во неразложенного товара",
+]
 
 MX_PROCESSING_COLUMN_ALIASES = [
     "мх обработки",
@@ -66,18 +73,30 @@ HOURS_COLUMN_ALIASES = [
     "час задержки",
     "время задержки ч",
     "время задержки, ч",
-    "Время простоя",
     "время простоя",
-    "Простой",
     "простой",
-    "Время простоя, ч",
-    "Время простоя ч",
+    "время простоя, ч",
+    "время простоя ч",
+    "время простоя (чч мм)",
+    "время простоя (чч:мм)",
 ]
 WAREHOUSE_COLUMN_ALIASES = [
     "склад",
     "наименование склада",
     "склад назначения",
     "warehouse",
+]
+BLOCK_COLUMN_ALIASES = [
+    "блок",
+]
+TARE_COLUMN_ALIASES = [
+    "тара",
+    "id тары",
+]
+UNPLACED_QTY_COLUMN_ALIASES = [
+    "кол-во неразложенного товара",
+    "кол во неразложенного товара",
+    "количество неразложенного товара",
 ]
 
 
@@ -98,16 +117,29 @@ class WarehouseDelayColumnMapping:
     hours: str
     mx_processing: str
     warehouse: str | None = None
+    block: str | None = None
+    tare: str | None = None
+    unplaced_quantity: str | None = None
 
 
 @dataclass
 class WarehouseDelayFileStats:
     filename: str
-    canonical_row_name: str
+    canonical_row_name: str | None
     processed_rows: int
     no_assignment_rows: int
     invalid_hours_rows: int
     matched_by: str
+    skipped_unknown_rows: int = 0
+
+
+@dataclass(frozen=True)
+class WarehouseDelayTopItem:
+    tare: str
+    delay_hours: float
+    delay_display: str
+    mx_processing: str
+    unplaced_quantity: int | float | str
 
 
 @dataclass
@@ -116,6 +148,7 @@ class WarehouseDelayAggregationResult:
     no_assignment_rows: dict[str, dict[str, int]]
     processed_files: list[WarehouseDelayFileStats]
     skipped_files: list[str]
+    top_without_assignment: list[WarehouseDelayTopItem] = field(default_factory=list)
 
     @property
     def processed_files_count(self) -> int:
@@ -124,6 +157,19 @@ class WarehouseDelayAggregationResult:
     @property
     def skipped_files_count(self) -> int:
         return len(self.skipped_files)
+
+
+@dataclass
+class _WarehouseDelayAccumulator:
+    all_rows: dict[str, dict[str, int]] = field(default_factory=lambda: make_empty_aggregation_map())
+    no_assignment_rows: dict[str, dict[str, int]] = field(
+        default_factory=lambda: make_empty_aggregation_map()
+    )
+    top_candidates: list[WarehouseDelayTopItem] = field(default_factory=list)
+    processed_rows: int = 0
+    no_assignment_rows_count: int = 0
+    invalid_hours_rows: int = 0
+    skipped_unknown_rows: int = 0
 
 
 def _normalize_spaces(value: str) -> str:
@@ -222,6 +268,8 @@ def resolve_columns(df: pd.DataFrame) -> WarehouseDelayColumnMapping:
     hours_column = _find_column(df.columns, HOURS_COLUMN_ALIASES)
     mx_processing_column = _find_column(df.columns, MX_PROCESSING_COLUMN_ALIASES)
     warehouse_column = _find_column(df.columns, WAREHOUSE_COLUMN_ALIASES)
+    tare_column = _find_column(df.columns, TARE_COLUMN_ALIASES)
+    unplaced_quantity_column = _find_column(df.columns, UNPLACED_QTY_COLUMN_ALIASES)
 
     missing: list[str] = []
     if not hours_column:
@@ -238,6 +286,24 @@ def resolve_columns(df: pd.DataFrame) -> WarehouseDelayColumnMapping:
         hours=hours_column,
         mx_processing=mx_processing_column,
         warehouse=warehouse_column,
+        tare=tare_column,
+        unplaced_quantity=unplaced_quantity_column,
+    )
+
+
+def resolve_consolidated_columns(df: pd.DataFrame) -> WarehouseDelayColumnMapping:
+    mapping = resolve_columns(df)
+    block_column = _find_column(df.columns, BLOCK_COLUMN_ALIASES)
+    if not block_column:
+        raise WarehouseDelayStructureError(
+            "Не найдена обязательная колонка 'Блок' для сводного файла."
+        )
+    return WarehouseDelayColumnMapping(
+        hours=mapping.hours,
+        mx_processing=mapping.mx_processing,
+        block=block_column,
+        tare=mapping.tare,
+        unplaced_quantity=mapping.unplaced_quantity,
     )
 
 
@@ -308,6 +374,12 @@ def parse_delay_hours(value: Any) -> float | None:
     return None
 
 
+def format_delay_hours(hours: float) -> str:
+    total_minutes = max(int(round(hours * 60)), 0)
+    whole_hours, minutes = divmod(total_minutes, 60)
+    return f"{whole_hours:02d}:{minutes:02d}"
+
+
 def bucketize_hours(hours: float) -> str | None:
     for label, lower_bound, upper_bound in BUCKETS:
         if upper_bound is None and hours >= lower_bound:
@@ -374,49 +446,160 @@ def read_warehouse_delay_file(file_path: str | Path) -> pd.DataFrame:
         ) from exc
 
 
-def calculate_file_statistics(
+def _normalize_text_cell(value: Any) -> str:
+    if value is None or pd.isna(value):
+        return ""
+    return str(value).strip()
+
+
+def _normalize_quantity(value: Any) -> int | float | str:
+    if value is None or pd.isna(value):
+        return 0
+    if isinstance(value, bool):
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(value) if value.is_integer() else value
+
+    text = str(value).strip()
+    if not text:
+        return 0
+
+    compact = text.replace(" ", "").replace(",", ".")
+    if re.fullmatch(r"[+-]?\d+", compact):
+        return int(compact)
+    if re.fullmatch(r"[+-]?\d+\.\d+", compact):
+        numeric_value = float(compact)
+        return int(numeric_value) if numeric_value.is_integer() else numeric_value
+    return text
+
+
+def _build_top_without_assignment(
+    candidates: Iterable[WarehouseDelayTopItem],
+) -> list[WarehouseDelayTopItem]:
+    best_by_tare: dict[str, WarehouseDelayTopItem] = {}
+
+    for candidate in candidates:
+        tare = _normalize_text_cell(candidate.tare)
+        if not tare:
+            logger.info(
+                "Warehouse delay top skipped row without tare mx_processing=%s delay=%s",
+                candidate.mx_processing,
+                candidate.delay_display,
+            )
+            continue
+
+        current = best_by_tare.get(tare)
+        if current is None or candidate.delay_hours > current.delay_hours:
+            best_by_tare[tare] = WarehouseDelayTopItem(
+                tare=tare,
+                delay_hours=candidate.delay_hours,
+                delay_display=candidate.delay_display,
+                mx_processing=_normalize_text_cell(candidate.mx_processing),
+                unplaced_quantity=candidate.unplaced_quantity,
+            )
+
+    return sorted(
+        best_by_tare.values(),
+        key=lambda item: item.delay_hours,
+        reverse=True,
+    )[:10]
+
+
+def _register_delay_row(
+    accumulator: _WarehouseDelayAccumulator,
+    *,
+    canonical_row_name: str,
+    hours: float,
+    mx_processing_value: Any,
+    tare_value: Any = None,
+    unplaced_quantity_value: Any = None,
+) -> None:
+    all_stats = accumulator.all_rows[canonical_row_name]
+    no_assignment_stats = accumulator.no_assignment_rows[canonical_row_name]
+    bucket = bucketize_hours(hours)
+
+    accumulator.processed_rows += 1
+    all_stats[TOTAL_COLUMN] += 1
+    if bucket:
+        all_stats[bucket] += 1
+
+    if is_without_assignment(mx_processing_value):
+        accumulator.no_assignment_rows_count += 1
+        no_assignment_stats[TOTAL_COLUMN] += 1
+        if bucket:
+            no_assignment_stats[bucket] += 1
+        accumulator.top_candidates.append(
+            WarehouseDelayTopItem(
+                tare=_normalize_text_cell(tare_value),
+                delay_hours=hours,
+                delay_display=format_delay_hours(hours),
+                mx_processing=_normalize_text_cell(mx_processing_value),
+                unplaced_quantity=_normalize_quantity(unplaced_quantity_value),
+            )
+        )
+
+
+def _calculate_file_statistics(
     df: pd.DataFrame,
     filename: str,
-) -> tuple[str, dict[str, int], dict[str, int], WarehouseDelayFileStats]:
+) -> tuple[str, dict[str, int], dict[str, int], WarehouseDelayFileStats, list[WarehouseDelayTopItem]]:
     column_mapping = resolve_columns(df)
     canonical_row_name, matched_by = resolve_canonical_row_name(
         filename, df, column_mapping
     )
-
-    all_stats = _empty_row_stats()
-    no_assignment_stats = _empty_row_stats()
-    invalid_hours_rows = 0
+    accumulator = _WarehouseDelayAccumulator()
 
     for _, row in df.iterrows():
         hours = parse_delay_hours(row[column_mapping.hours])
         if hours is None:
-            invalid_hours_rows += 1
+            accumulator.invalid_hours_rows += 1
             continue
 
-        all_stats[TOTAL_COLUMN] += 1
-        bucket = bucketize_hours(hours)
-        if bucket:
-            all_stats[bucket] += 1
+        _register_delay_row(
+            accumulator,
+            canonical_row_name=canonical_row_name,
+            hours=hours,
+            mx_processing_value=row[column_mapping.mx_processing],
+            tare_value=row[column_mapping.tare] if column_mapping.tare else None,
+            unplaced_quantity_value=(
+                row[column_mapping.unplaced_quantity]
+                if column_mapping.unplaced_quantity
+                else None
+            ),
+        )
 
-        if is_without_assignment(row[column_mapping.mx_processing]):
-            no_assignment_stats[TOTAL_COLUMN] += 1
-            if bucket:
-                no_assignment_stats[bucket] += 1
-
-    if invalid_hours_rows:
+    if accumulator.invalid_hours_rows:
         logger.info(
             "Warehouse delay: skipped rows with unknown hours file=%s count=%s",
             filename,
-            invalid_hours_rows,
+            accumulator.invalid_hours_rows,
         )
 
     file_stats = WarehouseDelayFileStats(
         filename=filename,
         canonical_row_name=canonical_row_name,
-        processed_rows=all_stats[TOTAL_COLUMN],
-        no_assignment_rows=no_assignment_stats[TOTAL_COLUMN],
-        invalid_hours_rows=invalid_hours_rows,
+        processed_rows=accumulator.processed_rows,
+        no_assignment_rows=accumulator.no_assignment_rows_count,
+        invalid_hours_rows=accumulator.invalid_hours_rows,
         matched_by=matched_by,
+    )
+    return (
+        canonical_row_name,
+        dict(accumulator.all_rows[canonical_row_name]),
+        dict(accumulator.no_assignment_rows[canonical_row_name]),
+        file_stats,
+        list(accumulator.top_candidates),
+    )
+
+
+def calculate_file_statistics(
+    df: pd.DataFrame,
+    filename: str,
+) -> tuple[str, dict[str, int], dict[str, int], WarehouseDelayFileStats]:
+    canonical_row_name, all_stats, no_assignment_stats, file_stats, _ = (
+        _calculate_file_statistics(df, filename)
     )
     return canonical_row_name, all_stats, no_assignment_stats, file_stats
 
@@ -436,6 +619,7 @@ def aggregate_warehouse_delay_files(
     no_assignment_rows = make_empty_aggregation_map()
     processed_files: list[WarehouseDelayFileStats] = []
     skipped_files: list[str] = []
+    top_candidates: list[WarehouseDelayTopItem] = []
 
     for filename, file_path in files:
         try:
@@ -444,8 +628,14 @@ def aggregate_warehouse_delay_files(
                 file_all_stats,
                 file_no_assignment_stats,
                 file_stats,
-            ) = process_warehouse_delay_file(file_path, filename)
-        except WarehouseDelayError:
+                file_top_candidates,
+            ) = _calculate_file_statistics(read_warehouse_delay_file(file_path), filename)
+        except WarehouseDelayError as exc:
+            logger.info(
+                "Warehouse delay skipped file filename=%s reason=%s",
+                filename,
+                exc,
+            )
             skipped_files.append(filename)
             continue
 
@@ -454,12 +644,84 @@ def aggregate_warehouse_delay_files(
         for column, value in file_no_assignment_stats.items():
             no_assignment_rows[canonical_row_name][column] += value
         processed_files.append(file_stats)
+        top_candidates.extend(file_top_candidates)
 
     return WarehouseDelayAggregationResult(
         all_rows=all_rows,
         no_assignment_rows=no_assignment_rows,
         processed_files=processed_files,
         skipped_files=skipped_files,
+        top_without_assignment=_build_top_without_assignment(top_candidates),
+    )
+
+
+def process_warehouse_delay_consolidated_file(
+    file_path: str | Path,
+    filename: str | None = None,
+) -> WarehouseDelayAggregationResult:
+    path = Path(file_path)
+    dataframe = read_warehouse_delay_file(path)
+    source_name = filename or path.name
+    column_mapping = resolve_consolidated_columns(dataframe)
+    accumulator = _WarehouseDelayAccumulator()
+
+    for row_index, row in dataframe.iterrows():
+        block_value = row[column_mapping.block]
+        canonical_row_name = map_filename_to_canonical_row(str(block_value))
+        if not canonical_row_name:
+            accumulator.skipped_unknown_rows += 1
+            logger.info(
+                "Warehouse delay consolidated skipped row with unknown block file=%s row=%s block=%r",
+                source_name,
+                row_index + 2,
+                block_value,
+            )
+            continue
+
+        hours = parse_delay_hours(row[column_mapping.hours])
+        if hours is None:
+            accumulator.invalid_hours_rows += 1
+            logger.info(
+                "Warehouse delay consolidated skipped row with invalid hours file=%s row=%s value=%r",
+                source_name,
+                row_index + 2,
+                row[column_mapping.hours],
+            )
+            continue
+
+        _register_delay_row(
+            accumulator,
+            canonical_row_name=canonical_row_name,
+            hours=hours,
+            mx_processing_value=row[column_mapping.mx_processing],
+            tare_value=row[column_mapping.tare] if column_mapping.tare else None,
+            unplaced_quantity_value=(
+                row[column_mapping.unplaced_quantity]
+                if column_mapping.unplaced_quantity
+                else None
+            ),
+        )
+
+    if accumulator.processed_rows == 0:
+        raise WarehouseDelayUnrecognizedFile(
+            "Не удалось распознать сводный файл: проверьте колонку 'Блок' и формат времени простоя."
+        )
+
+    file_stats = WarehouseDelayFileStats(
+        filename=source_name,
+        canonical_row_name=None,
+        processed_rows=accumulator.processed_rows,
+        no_assignment_rows=accumulator.no_assignment_rows_count,
+        invalid_hours_rows=accumulator.invalid_hours_rows,
+        matched_by="block",
+        skipped_unknown_rows=accumulator.skipped_unknown_rows,
+    )
+    return WarehouseDelayAggregationResult(
+        all_rows=accumulator.all_rows,
+        no_assignment_rows=accumulator.no_assignment_rows,
+        processed_files=[file_stats],
+        skipped_files=[],
+        top_without_assignment=_build_top_without_assignment(accumulator.top_candidates),
     )
 
 
@@ -479,7 +741,7 @@ def _build_sheet_block(
     totals = sum_total_row(rows_map)
     block_rows.append(
         [
-            "Общее количество",
+            TOTAL_COLUMN,
             *[totals[column] for column in BUCKET_LABELS],
             totals[TOTAL_COLUMN],
         ]
@@ -498,3 +760,47 @@ def build_warehouse_delay_sheet_rows(
         aggregation.no_assignment_rows,
     )
     return [*first_block, [], [], *second_block]
+
+
+def build_warehouse_delay_top_rows(
+    aggregation: WarehouseDelayAggregationResult,
+) -> list[list[str | int | float]]:
+    rows: list[list[str | int | float]] = [
+        [TOP_WITHOUT_ASSIGNMENT_TITLE],
+        TOP_WITHOUT_ASSIGNMENT_HEADERS,
+    ]
+    for item in aggregation.top_without_assignment:
+        rows.append(
+            [
+                item.tare,
+                item.delay_display,
+                item.mx_processing,
+                item.unplaced_quantity,
+            ]
+        )
+    return rows
+
+
+def build_warehouse_delay_sheet_matrix(
+    aggregation: WarehouseDelayAggregationResult,
+    report_date: date,
+) -> list[list[str | int | float]]:
+    left_rows = build_warehouse_delay_sheet_rows(aggregation, report_date)
+    right_rows = build_warehouse_delay_top_rows(aggregation)
+    if not right_rows:
+        return left_rows
+
+    left_width = max((len(row) for row in left_rows), default=0)
+    right_width = max((len(row) for row in right_rows), default=0)
+    spacer = ["", ""]
+    total_height = max(len(left_rows), len(right_rows))
+    matrix: list[list[str | int | float]] = []
+
+    for index in range(total_height):
+        left_row = list(left_rows[index]) if index < len(left_rows) else []
+        right_row = list(right_rows[index]) if index < len(right_rows) else []
+        padded_left_row = left_row + [""] * (left_width - len(left_row))
+        padded_right_row = right_row + [""] * (right_width - len(right_row))
+        matrix.append([*padded_left_row, *spacer, *padded_right_row])
+
+    return matrix

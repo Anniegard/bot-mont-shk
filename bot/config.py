@@ -78,7 +78,6 @@ def load_config(env_path: str | None = None) -> Config:
     if env_file.exists():
         load_dotenv(env_file, override=False)
     else:
-        # Fallback to default behaviour (environment-only) if .env is absent
         load_dotenv(override=False)
 
     telegram_token = (

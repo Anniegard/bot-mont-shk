@@ -59,7 +59,9 @@ from bot.services.yadisk_ingest import (
 from bot.services.sheets import update_tables, update_warehouse_delay_sheet
 from bot.services.warehouse_delay import (
     aggregate_warehouse_delay_files,
-    build_warehouse_delay_sheet_rows,
+    build_warehouse_delay_sheet_matrix,
+    process_warehouse_delay_consolidated_file,
+    WarehouseDelayError,
 )
 
 logger = logging.getLogger(__name__)
@@ -73,6 +75,8 @@ BUTTON_YA_HELP = "📎 Инструкция по загрузке на Диск"
 
 EXPECTED_NO_MOVE = "no_move"
 EXPECTED_24H = "24h"
+EXPECTED_WAREHOUSE_DELAY_SINGLE = "warehouse_delay_single"
+WAREHOUSE_DELAY_MODE_KEY = "warehouse_delay_mode"
 WAREHOUSE_DELAY_TZ = ZoneInfo("Europe/Moscow")
 NO_MOVE_EXPORT_KEY = "no_move_export_mode"
 
@@ -96,6 +100,11 @@ NO_MOVE_EXPORT_ORDER = [
     f"{NO_MOVE_EXPORT_CALLBACK_PREFIX}without",
     f"{NO_MOVE_EXPORT_CALLBACK_PREFIX}only",
 ]
+WAREHOUSE_DELAY_CALLBACK_PREFIX = "warehouse_delay_mode:"
+WAREHOUSE_DELAY_MODE_BUTTONS = {
+    f"{WAREHOUSE_DELAY_CALLBACK_PREFIX}single": EXPECTED_WAREHOUSE_DELAY_SINGLE,
+    f"{WAREHOUSE_DELAY_CALLBACK_PREFIX}multiple": "warehouse_delay_multiple",
+}
 
 MAX_TG_UPLOAD_BYTES = 20 * 1024 * 1024
 MAX_URL_BYTES = 200 * 1024 * 1024
@@ -180,16 +189,23 @@ class BotHandlers:
                 self.no_move_mode_selected, pattern=f"^{NO_MOVE_EXPORT_CALLBACK_PREFIX}"
             )
         )
+        application.add_handler(
+            CallbackQueryHandler(
+                self.warehouse_delay_mode_selected,
+                pattern=f"^{WAREHOUSE_DELAY_CALLBACK_PREFIX}",
+            )
+        )
         application.add_handler(CallbackQueryHandler(self.admin_button_handler))
 
     async def start(self, update: Update, context: CallbackContext) -> None:
         user = update.effective_user
         context.user_data["expected_upload"] = None
+        context.user_data[WAREHOUSE_DELAY_MODE_KEY] = None
         message = (
             "Привет! Я могу обработать Excel:\n"
             "• 📦 Без движения — основной файл с гофрой/идентификаторами.\n"
             "• ⏱ 24 часа — файл прогноза списаний, обновляет правую таблицу.\n"
-            "• 📦 Задержка склада (сводная) — забирает все файлы из папки Я.Диска и пишет отдельный лист.\n"
+            "• 📦 Задержка склада (сводная) — умеет обработать один сводный файл или все файлы из папки Я.Диска.\n"
             "Выберите режим кнопкой снизу и пришлите файл (.xlsx) до 20 МБ или ссылку на файл (Яндекс.Диск/прямая).\n"
             "Между строками выгрузки будет пустая строка для удобного CTRL+A."
         )
@@ -287,6 +303,7 @@ class BotHandlers:
     async def select_no_move(self, update: Update, context: CallbackContext) -> None:
         context.user_data["expected_upload"] = EXPECTED_NO_MOVE
         context.user_data[NO_MOVE_EXPORT_KEY] = None
+        context.user_data[WAREHOUSE_DELAY_MODE_KEY] = None
         user = update.effective_user
         logger.info(
             "Выбран режим без движения user_id=%s username=%s", user.id, user.username
@@ -298,6 +315,7 @@ class BotHandlers:
 
     async def select_24h(self, update: Update, context: CallbackContext) -> None:
         context.user_data["expected_upload"] = EXPECTED_24H
+        context.user_data[WAREHOUSE_DELAY_MODE_KEY] = None
         user = update.effective_user
         logger.info("Выбран режим 24ч user_id=%s username=%s", user.id, user.username)
         await update.message.reply_text(
@@ -308,17 +326,73 @@ class BotHandlers:
     async def handle_warehouse_delay_summary(
         self, update: Update, context: CallbackContext
     ) -> None:
-        user = update.effective_user
         context.user_data["expected_upload"] = None
+        context.user_data[WAREHOUSE_DELAY_MODE_KEY] = None
+        await update.message.reply_text(
+            "Выберите способ обработки:",
+            reply_markup=self._warehouse_delay_mode_keyboard(),
+        )
 
+    def _warehouse_delay_mode_keyboard(self) -> InlineKeyboardMarkup:
+        return InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "Из одного файла",
+                        callback_data=f"{WAREHOUSE_DELAY_CALLBACK_PREFIX}single",
+                    ),
+                    InlineKeyboardButton(
+                        "Из нескольких файлов",
+                        callback_data=f"{WAREHOUSE_DELAY_CALLBACK_PREFIX}multiple",
+                    ),
+                ]
+            ]
+        )
+
+    async def warehouse_delay_mode_selected(
+        self, update: Update, context: CallbackContext
+    ) -> None:
+        query = update.callback_query
+        await query.answer()
+        selected_mode = WAREHOUSE_DELAY_MODE_BUTTONS.get(query.data)
+        if not selected_mode:
+            return
+
+        context.user_data[WAREHOUSE_DELAY_MODE_KEY] = selected_mode
+        user = query.from_user
+        logger.info(
+            "Выбран подрежим warehouse delay user_id=%s username=%s mode=%s",
+            user.id,
+            user.username,
+            selected_mode,
+        )
+
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except Exception:
+            pass
+
+        if selected_mode == EXPECTED_WAREHOUSE_DELAY_SINGLE:
+            context.user_data["expected_upload"] = EXPECTED_WAREHOUSE_DELAY_SINGLE
+            await query.message.reply_text(
+                "Пришлите один Excel-файл, прямую ссылку на него или нажмите «☁️ Взять с Я.Диска (последний файл)».\n"
+                "Для этого режима нужен единый сводный файл с колонкой «Блок».",
+                reply_markup=self.reply_keyboard,
+            )
+            return
+
+        context.user_data["expected_upload"] = None
+        await self._run_warehouse_delay_multiple(query.message, user)
+
+    async def _run_warehouse_delay_multiple(self, message, user) -> None:
         if self.processing_lock.locked():
-            await update.message.reply_text(
+            await message.reply_text(
                 "Сейчас выполняется другая обработка. Повторите чуть позже."
             )
             return
 
         if not self.config.yandex_oauth_token:
-            await update.message.reply_text(
+            await message.reply_text(
                 "Яндекс OAuth токен не настроен. Обратитесь к администратору."
             )
             return
@@ -327,7 +401,7 @@ class BotHandlers:
             self.config.yandex_warehouse_delay_dir
             or "disk:/BOT_UPLOADS/warehouse_delay/"
         )
-        status_message = await update.message.reply_text(
+        status_message = await message.reply_text(
             f"Начал обработку файлов из {folder}..."
         )
 
@@ -375,7 +449,7 @@ class BotHandlers:
                         )
                     return
 
-                sheet_rows = build_warehouse_delay_sheet_rows(
+                sheet_rows = build_warehouse_delay_sheet_matrix(
                     aggregation,
                     datetime.now(WAREHOUSE_DELAY_TZ).date(),
                 )
@@ -523,6 +597,79 @@ class BotHandlers:
             aggregation.skipped_files.extend(skipped_files)
             return aggregation
 
+    async def _handle_warehouse_delay_single_file(
+        self,
+        update: Update,
+        context: CallbackContext,
+        file_path: str,
+        file_info: dict,
+    ) -> None:
+        user = update.effective_user
+        context.user_data["expected_upload"] = None
+        status_message = await update.message.reply_text(
+            "Читаю сводный файл задержки склада..."
+        )
+
+        async with self.processing_lock:
+            try:
+                aggregation = process_warehouse_delay_consolidated_file(
+                    file_path,
+                    filename=file_info.get("filename"),
+                )
+                sheet_rows = build_warehouse_delay_sheet_matrix(
+                    aggregation,
+                    datetime.now(WAREHOUSE_DELAY_TZ).date(),
+                )
+                update_warehouse_delay_sheet(
+                    self.gc,
+                    self.config.spreadsheet_id,
+                    self.config.warehouse_delay_worksheet_name
+                    or "Выгрузка задержка склада",
+                    sheet_rows,
+                )
+
+                file_stats = aggregation.processed_files[0] if aggregation.processed_files else None
+                skipped_blocks = file_stats.skipped_unknown_rows if file_stats else 0
+                result_message = (
+                    "Сводная по задержке склада обновлена из одного файла."
+                    f"\nОбработано строк: {file_stats.processed_rows if file_stats else 0}."
+                    f"\nБез задания: {file_stats.no_assignment_rows if file_stats else 0}."
+                    f"\nТоп без задания: {len(aggregation.top_without_assignment)}."
+                )
+                if skipped_blocks:
+                    result_message += f"\nПропущено строк с неизвестным блоком: {skipped_blocks}."
+                await status_message.edit_text(result_message)
+
+                logger.info(
+                    "Warehouse delay single updated user_id=%s username=%s file=%s processed=%s invalid_hours=%s skipped_unknown_blocks=%s worksheet=%s",
+                    user.id,
+                    user.username,
+                    file_info.get("filename"),
+                    file_stats.processed_rows if file_stats else 0,
+                    file_stats.invalid_hours_rows if file_stats else 0,
+                    skipped_blocks,
+                    self.config.warehouse_delay_worksheet_name,
+                )
+            except WarehouseDelayError as exc:
+                logger.warning(
+                    "Warehouse delay single validation error user_id=%s username=%s file=%s: %s",
+                    user.id,
+                    user.username,
+                    file_info.get("filename"),
+                    exc,
+                )
+                await status_message.edit_text(str(exc))
+            except Exception:
+                logger.exception(
+                    "Warehouse delay single processing failed user_id=%s username=%s file=%s",
+                    user.id,
+                    user.username,
+                    file_info.get("filename"),
+                )
+                await status_message.edit_text(
+                    "Произошла ошибка при обработке сводной задержки склада. Подробности в логах."
+                )
+
     async def handle_yadisk_help(
         self, update: Update, context: CallbackContext
     ) -> None:
@@ -532,7 +679,7 @@ class BotHandlers:
             f"- Для «24 часа» — в папку {self.config.yandex_24h_dir or '/BOT_UPLOADS/24h/'}\n"
             f"- Для «задержка склада (сводная)» — в папку {self.config.yandex_warehouse_delay_dir or 'disk:/BOT_UPLOADS/warehouse_delay/'}\n"
             "Бот возьмёт последний Excel/zip из выбранной папки.\n"
-            "Для режима сводной задержки отдельная кнопка сама прочитает все файлы из папки.\n"
+            "Для сводной задержки склада можно выбрать один файл или обработку всех файлов из папки.\n"
             "Выберите режим, затем нажмите «☁️ Взять с Я.Диска (последний файл)»."
         )
         await update.message.reply_text(text, reply_markup=self.reply_keyboard)
@@ -544,7 +691,7 @@ class BotHandlers:
         expected = context.user_data.get("expected_upload")
         if not expected:
             await update.message.reply_text(
-                "Сначала выберите режим: 📦 Без движения или ⏱ 24 часа (обновить).",
+                "Сначала выберите режим: 📦 Без движения, ⏱ 24 часа или «📦 Задержка склада (сводная) → Из одного файла».",
                 reply_markup=self.reply_keyboard,
             )
             return
@@ -560,11 +707,13 @@ class BotHandlers:
             )
             return
 
-        folder = (
-            self.config.yandex_no_move_dir
-            if expected == EXPECTED_NO_MOVE
-            else self.config.yandex_24h_dir
-        ) or "/"
+        if expected == EXPECTED_NO_MOVE:
+            folder = self.config.yandex_no_move_dir
+        elif expected == EXPECTED_24H:
+            folder = self.config.yandex_24h_dir
+        else:
+            folder = self.config.yandex_warehouse_delay_dir
+        folder = folder or "/"
         await update.message.reply_text("Ищу последний файл на Я.Диске...")
 
         try:
@@ -653,7 +802,7 @@ class BotHandlers:
             return
 
         await update.message.reply_text(
-            "Выберите режим кнопкой снизу и пришлите Excel (.xlsx до 20 МБ) или ссылку на файл.",
+            "Выберите режим кнопкой снизу и пришлите Excel (.xlsx до 20 МБ) или ссылку на файл. Для «Задержка склада (сводная)» сначала выберите подрежим.",
             reply_markup=self.reply_keyboard,
         )
 
@@ -664,7 +813,7 @@ class BotHandlers:
 
         if not expected:
             await update.message.reply_text(
-                "Сначала выберите режим: 📦 Без движения или ⏱ 24 часа (обновить).",
+                "Сначала выберите режим: 📦 Без движения, ⏱ 24 часа или «📦 Задержка склада (сводная) → Из одного файла».",
                 reply_markup=self.reply_keyboard,
             )
             return
@@ -827,6 +976,10 @@ class BotHandlers:
             )
         elif expected == EXPECTED_24H:
             await self._handle_24h_file(update, context, file_path, file_info)
+        elif expected == EXPECTED_WAREHOUSE_DELAY_SINGLE:
+            await self._handle_warehouse_delay_single_file(
+                update, context, file_path, file_info
+            )
         else:
             await update.message.reply_text("Неизвестный режим. Выберите кнопку снизу.")
 

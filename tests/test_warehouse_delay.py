@@ -10,7 +10,11 @@ from bot.services.sheets import update_warehouse_delay_sheet
 from bot.services.warehouse_delay import (
     CANONICAL_ROW_ORDER,
     SHEET_HEADERS,
+    TOP_WITHOUT_ASSIGNMENT_HEADERS,
+    TOP_WITHOUT_ASSIGNMENT_TITLE,
     WarehouseDelayAggregationResult,
+    WarehouseDelayTopItem,
+    build_warehouse_delay_sheet_matrix,
     build_warehouse_delay_sheet_rows,
     bucketize_hours,
     calculate_file_statistics,
@@ -19,6 +23,7 @@ from bot.services.warehouse_delay import (
     map_filename_to_canonical_row,
     normalize_filename,
     parse_delay_hours,
+    process_warehouse_delay_consolidated_file,
     resolve_columns,
     sum_total_row,
     aggregate_warehouse_delay_files,
@@ -249,6 +254,74 @@ def test_aggregate_skips_unrecognized_file(tmp_path) -> None:
     assert aggregation.all_rows["Невинномысск Б1"][">12ч"] == 1
 
 
+def test_process_consolidated_file_groups_rows_by_block(tmp_path) -> None:
+    path = tmp_path / "warehouse_delay_single.xlsx"
+    pd.DataFrame(
+        {
+            "Блок": [
+                "Невинномысск Б1 - Красота",
+                "Невинномысск Б1 - Красота",
+                "Невинномысск КБ1",
+                "Неизвестный блок",
+            ],
+            "Тара": ["T-1", "T-2", "T-3", "T-4"],
+            "Время простоя (чч:мм)": ["45:57", "16:33", "86:42", "12:10"],
+            "МХ обработки": ["Задание 1", "Ожидает", "Ручная обработка", "Ожидает"],
+            "Кол-во неразложенного товара": [5, 2, 1, 9],
+        }
+    ).to_excel(path, index=False)
+
+    aggregation = process_warehouse_delay_consolidated_file(path)
+
+    assert aggregation.all_rows["Невинномысск Б1 - Красота"][">42ч"] == 1
+    assert aggregation.all_rows["Невинномысск Б1 - Красота"][">12ч"] == 1
+    assert aggregation.all_rows["Невинномысск КБ1"][">80ч"] == 1
+    assert aggregation.no_assignment_rows["Невинномысск Б1 - Красота"][">12ч"] == 1
+    assert aggregation.no_assignment_rows["Невинномысск КБ1"][">80ч"] == 1
+    assert aggregation.processed_files[0].skipped_unknown_rows == 1
+
+
+def test_process_consolidated_file_raises_for_unrecognized_blocks_only(tmp_path) -> None:
+    path = tmp_path / "unknown_blocks.xlsx"
+    pd.DataFrame(
+        {
+            "Блок": ["Совсем другой склад"],
+            "Тара": ["T-1"],
+            "Время простоя (чч:мм)": ["45:57"],
+            "МХ обработки": ["Ожидает"],
+        }
+    ).to_excel(path, index=False)
+
+    with pytest.raises(Exception, match="Не удалось распознать сводный файл"):
+        process_warehouse_delay_consolidated_file(path)
+
+
+def test_top_without_assignment_sorts_deduplicates_and_normalizes_quantity(tmp_path) -> None:
+    path = tmp_path / "top.xlsx"
+    pd.DataFrame(
+        {
+            "Блок": [
+                "Невинномысск Б1 - Красота",
+                "Невинномысск Б1 - Красота",
+                "Невинномысск КБ1",
+                "Невинномысск КБ1",
+            ],
+            "Тара": ["T-1", "T-1", "T-2", "T-3"],
+            "Время простоя (чч:мм)": ["45:57", "12:00", "bad", "123:07"],
+            "МХ обработки": ["Ожидает", "Ожидает", "Ожидает", "Ручная обработка"],
+            "Кол-во неразложенного товара": ["", 4, 7, None],
+        }
+    ).to_excel(path, index=False)
+
+    aggregation = process_warehouse_delay_consolidated_file(path)
+
+    assert [item.tare for item in aggregation.top_without_assignment] == ["T-3", "T-1"]
+    assert aggregation.top_without_assignment[0].delay_display == "123:07"
+    assert aggregation.top_without_assignment[0].unplaced_quantity == 0
+    assert aggregation.top_without_assignment[1].delay_display == "45:57"
+    assert aggregation.top_without_assignment[1].unplaced_quantity == 0
+
+
 def test_build_sheet_rows_produces_two_blocks_with_totals() -> None:
     all_rows = make_empty_aggregation_map()
     no_assignment_rows = make_empty_aggregation_map()
@@ -277,6 +350,32 @@ def test_build_sheet_rows_produces_two_blocks_with_totals() -> None:
     assert rows[first_total_row_index + 2] == []
     assert rows[second_block_title_index] == ["24.03.2026 без задания"]
     assert rows[second_block_title_index + 1] == SHEET_HEADERS
+
+
+def test_build_sheet_matrix_places_top_block_to_the_right() -> None:
+    aggregation = WarehouseDelayAggregationResult(
+        all_rows=make_empty_aggregation_map(),
+        no_assignment_rows=make_empty_aggregation_map(),
+        processed_files=[],
+        skipped_files=[],
+        top_without_assignment=[
+            WarehouseDelayTopItem(
+                tare="T-1",
+                delay_hours=45.95,
+                delay_display="45:57",
+                mx_processing="Ожидает",
+                unplaced_quantity=2,
+            )
+        ],
+    )
+
+    rows = build_warehouse_delay_sheet_matrix(aggregation, date(2026, 3, 24))
+    left_width = len(SHEET_HEADERS)
+
+    assert rows[0][0] == "24.03.2026"
+    assert rows[0][left_width + 2] == TOP_WITHOUT_ASSIGNMENT_TITLE
+    assert rows[1][left_width + 2 : left_width + 6] == TOP_WITHOUT_ASSIGNMENT_HEADERS
+    assert rows[2][left_width + 2 : left_width + 6] == ["T-1", "45:57", "Ожидает", 2]
 
 
 def test_update_warehouse_delay_sheet_preserves_worksheet_and_clears_only_values() -> None:
