@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import asyncio
 from datetime import date
+from types import SimpleNamespace
 
 import gspread
 import pandas as pd
 import pytest
 
+import bot.handlers as handlers_module
+from bot.config import Config
+from bot.handlers import BotHandlers
 from bot.services.sheets import update_warehouse_delay_sheet
 from bot.services.warehouse_delay import (
     CANONICAL_ROW_ORDER,
@@ -13,6 +18,7 @@ from bot.services.warehouse_delay import (
     TOP_WITHOUT_ASSIGNMENT_HEADERS,
     TOP_WITHOUT_ASSIGNMENT_TITLE,
     WarehouseDelayAggregationResult,
+    WarehouseDelayFileStats,
     WarehouseDelayTopItem,
     build_warehouse_delay_sheet_matrix,
     build_warehouse_delay_sheet_rows,
@@ -28,6 +34,26 @@ from bot.services.warehouse_delay import (
     sum_total_row,
     aggregate_warehouse_delay_files,
 )
+
+
+class FakeStatusMessage:
+    def __init__(self) -> None:
+        self.edit_calls: list[tuple[str, dict[str, object]]] = []
+
+    async def edit_text(self, text: str, **kwargs) -> None:
+        self.edit_calls.append((text, kwargs))
+
+
+class FakeTelegramMessage:
+    def __init__(self) -> None:
+        self.reply_calls: list[tuple[str, dict[str, object]]] = []
+        self.status_messages: list[FakeStatusMessage] = []
+
+    async def reply_text(self, text: str, **kwargs) -> FakeStatusMessage:
+        self.reply_calls.append((text, kwargs))
+        status_message = FakeStatusMessage()
+        self.status_messages.append(status_message)
+        return status_message
 
 
 class FakeWarehouseDelayWorksheet:
@@ -108,6 +134,18 @@ class FakeWarehouseDelayClient:
         return self._spreadsheet
 
 
+def make_test_config(tmp_path, *, spreadsheet_id: str = "spreadsheet-id") -> Config:
+    return Config(
+        telegram_token="token",
+        spreadsheet_id=spreadsheet_id,
+        google_credentials_path=tmp_path / "credentials.json",
+        db_path=tmp_path / "bot.db",
+        yandex_oauth_token="yandex-token",
+        yandex_warehouse_delay_dir="disk:/BOT_UPLOADS/warehouse_delay/",
+        warehouse_delay_worksheet_name="Выгрузка задержка склада",
+    )
+
+
 def test_normalize_filename_ignores_extension_hyphen_and_spacing() -> None:
     assert (
         normalize_filename("Невинномысск   Б1-Красота.xlsx")
@@ -130,8 +168,29 @@ def test_map_filename_to_canonical_row_matches_aliases() -> None:
     )
 
 
+def test_canonical_row_order_matches_summary_layout() -> None:
+    assert CANONICAL_ROW_ORDER == [
+        "Невинномысск",
+        "Невинномысск Б1",
+        "Невинномысск Б1 - Красота",
+        "Невинномысск Б1 КГТ",
+        "Невинномысск КБ1",
+        "Невинномысск КБ1 - Электроника",
+        "Невинномысск КБ1 КГТ",
+        "Невинномысск КБ2",
+        "Невинномысск КБ2 - КГТ",
+        "Невинномысск Блок 2",
+        "Невинномысск ПБ2 - КГТ",
+        "Невинномысск Б2 Красота",
+        "Невинномысск ПБ2П",
+    ]
+
+
 def test_bucketize_hours_uses_expected_boundaries() -> None:
-    assert bucketize_hours(5.99) is None
+    assert bucketize_hours(0) == "0-6ч"
+    assert bucketize_hours(3.99) == "0-6ч"
+    assert bucketize_hours(4) == "0-6ч"
+    assert bucketize_hours(5.99) == "0-6ч"
     assert bucketize_hours(6) == ">6ч"
     assert bucketize_hours(12) == ">12ч"
     assert bucketize_hours(79.99) == ">60ч"
@@ -177,13 +236,15 @@ def test_calculate_file_statistics_counts_buckets_and_without_assignment() -> No
     df = pd.DataFrame(
         {
             "МХ обработки": [
+                "Задание 0",
+                "Ожидает",
                 "Задания 1",
                 "В очереди",
                 None,
                 "Задание 2",
                 "Ручная обработка",
             ],
-            "Задержка, ч": [6, 12, "18:30:00", "bad", 205],
+            "Задержка, ч": [0, 4, 6, 12, "18:30:00", "bad", 205],
         }
     )
 
@@ -192,12 +253,14 @@ def test_calculate_file_statistics_counts_buckets_and_without_assignment() -> No
     )
 
     assert row_name == "Невинномысск Б1 - Красота"
-    assert all_stats["Общее количество"] == 4
+    assert all_stats["Общее количество"] == 6
+    assert all_stats["0-6ч"] == 2
     assert all_stats[">6ч"] == 1
     assert all_stats[">12ч"] == 1
     assert all_stats[">18ч"] == 1
     assert all_stats[">200ч"] == 1
-    assert no_assignment_stats["Общее количество"] == 3
+    assert no_assignment_stats["Общее количество"] == 4
+    assert no_assignment_stats["0-6ч"] == 1
     assert no_assignment_stats[">12ч"] == 1
     assert no_assignment_stats[">18ч"] == 1
     assert no_assignment_stats[">200ч"] == 1
@@ -221,6 +284,8 @@ def test_calculate_file_statistics_can_resolve_row_from_structure() -> None:
 
 def test_sum_total_row_sums_all_warehouses() -> None:
     rows_map = make_empty_aggregation_map()
+    rows_map["Невинномысск"]["0-6ч"] = 1
+    rows_map["Невинномысск"]["Общее количество"] = 1
     rows_map["Невинномысск Б1 - Красота"][">6ч"] = 2
     rows_map["Невинномысск Б1 - Красота"]["Общее количество"] = 3
     rows_map["Невинномысск КБ1"][">12ч"] = 4
@@ -228,9 +293,10 @@ def test_sum_total_row_sums_all_warehouses() -> None:
 
     totals = sum_total_row(rows_map)
 
+    assert totals["0-6ч"] == 1
     assert totals[">6ч"] == 2
     assert totals[">12ч"] == 4
-    assert totals["Общее количество"] == 7
+    assert totals["Общее количество"] == 8
 
 
 def test_aggregate_skips_unrecognized_file(tmp_path) -> None:
@@ -325,10 +391,12 @@ def test_top_without_assignment_sorts_deduplicates_and_normalizes_quantity(tmp_p
 def test_build_sheet_rows_produces_two_blocks_with_totals() -> None:
     all_rows = make_empty_aggregation_map()
     no_assignment_rows = make_empty_aggregation_map()
+    all_rows["Невинномысск"]["0-6ч"] = 1
+    all_rows["Невинномысск"]["Общее количество"] = 1
     all_rows["Невинномысск Б1 - Красота"][">6ч"] = 2
     all_rows["Невинномысск Б1 - Красота"]["Общее количество"] = 3
-    no_assignment_rows["Невинномысск Б1 - Красота"][">6ч"] = 1
-    no_assignment_rows["Невинномысск Б1 - Красота"]["Общее количество"] = 1
+    no_assignment_rows["Невинномысск Б1"]["0-6ч"] = 1
+    no_assignment_rows["Невинномысск Б1"]["Общее количество"] = 1
     aggregation = WarehouseDelayAggregationResult(
         all_rows=all_rows,
         no_assignment_rows=no_assignment_rows,
@@ -344,12 +412,29 @@ def test_build_sheet_rows_produces_two_blocks_with_totals() -> None:
     assert rows[0] == ["24.03.2026"]
     assert rows[1] == SHEET_HEADERS
     assert rows[2][0] == CANONICAL_ROW_ORDER[0]
+    assert len(rows[1]) == len(SHEET_HEADERS)
+    assert len(rows[2]) == len(SHEET_HEADERS)
+    assert rows[2][1] == 1
     assert rows[first_total_row_index][0] == "Общее количество"
-    assert rows[first_total_row_index][-1] == 3
+    assert rows[first_total_row_index][1] == 1
+    assert rows[first_total_row_index][-1] == 4
     assert rows[first_total_row_index + 1] == []
     assert rows[first_total_row_index + 2] == []
     assert rows[second_block_title_index] == ["24.03.2026 без задания"]
     assert rows[second_block_title_index + 1] == SHEET_HEADERS
+    assert rows[second_block_title_index + 2][0] == CANONICAL_ROW_ORDER[0]
+    assert rows[second_block_title_index + 3][0] == CANONICAL_ROW_ORDER[1]
+    assert rows[second_block_title_index + 3][1] == 1
+
+
+def test_sheet_headers_include_new_buckets_at_start() -> None:
+    assert SHEET_HEADERS[:5] == [
+        "Склад",
+        "0-6ч",
+        ">6ч",
+        ">12ч",
+        ">18ч",
+    ]
 
 
 def test_build_sheet_matrix_places_top_block_to_the_right() -> None:
@@ -376,6 +461,8 @@ def test_build_sheet_matrix_places_top_block_to_the_right() -> None:
     assert rows[0][left_width + 2] == TOP_WITHOUT_ASSIGNMENT_TITLE
     assert rows[1][left_width + 2 : left_width + 6] == TOP_WITHOUT_ASSIGNMENT_HEADERS
     assert rows[2][left_width + 2 : left_width + 6] == ["T-1", "45:57", "Ожидает", 2]
+    assert len(rows[0]) == left_width + 2 + len(TOP_WITHOUT_ASSIGNMENT_HEADERS)
+    assert len(rows[1][:left_width]) == left_width
 
 
 def test_update_warehouse_delay_sheet_preserves_worksheet_and_clears_only_values() -> None:
@@ -410,3 +497,118 @@ def test_update_warehouse_delay_sheet_preserves_worksheet_and_clears_only_values
     assert worksheet.clear_calls == 0
     assert spreadsheet.add_worksheet_calls == []
     assert spreadsheet.delete_worksheet_calls == []
+
+
+def test_single_warehouse_delay_success_message_includes_sheet_link(tmp_path, monkeypatch) -> None:
+    handler = BotHandlers(make_test_config(tmp_path), gspread_client=object())
+    message = FakeTelegramMessage()
+    update = SimpleNamespace(
+        effective_user=SimpleNamespace(id=1, username="tester"),
+        message=message,
+    )
+    context = SimpleNamespace(user_data={})
+    aggregation = WarehouseDelayAggregationResult(
+        all_rows=make_empty_aggregation_map(),
+        no_assignment_rows=make_empty_aggregation_map(),
+        processed_files=[
+            WarehouseDelayFileStats(
+                filename="single.xlsx",
+                canonical_row_name="Невинномысск",
+                processed_rows=7,
+                no_assignment_rows=3,
+                invalid_hours_rows=0,
+                matched_by="structure",
+                skipped_unknown_rows=2,
+            )
+        ],
+        skipped_files=[],
+    )
+
+    monkeypatch.setattr(
+        handlers_module,
+        "process_warehouse_delay_consolidated_file",
+        lambda *args, **kwargs: aggregation,
+    )
+    monkeypatch.setattr(
+        handlers_module,
+        "build_warehouse_delay_sheet_matrix",
+        lambda *args, **kwargs: [["row"]],
+    )
+    monkeypatch.setattr(
+        handlers_module,
+        "update_warehouse_delay_sheet",
+        lambda *args, **kwargs: None,
+    )
+
+    asyncio.run(
+        handler._handle_warehouse_delay_single_file(
+            update,
+            context,
+            str(tmp_path / "warehouse_delay_single.xlsx"),
+            {"filename": "warehouse_delay_single.xlsx"},
+        )
+    )
+
+    assert len(message.status_messages) == 1
+    edit_text, kwargs = message.status_messages[0].edit_calls[0]
+    assert "Сводная по задержке склада обновлена из одного файла." in edit_text
+    assert "Ссылка на таблицу" in edit_text
+    assert kwargs == {
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }
+
+
+def test_multiple_warehouse_delay_success_message_includes_sheet_link(tmp_path, monkeypatch) -> None:
+    handler = BotHandlers(make_test_config(tmp_path), gspread_client=object())
+    message = FakeTelegramMessage()
+    user = SimpleNamespace(id=1, username="tester")
+    aggregation = WarehouseDelayAggregationResult(
+        all_rows=make_empty_aggregation_map(),
+        no_assignment_rows=make_empty_aggregation_map(),
+        processed_files=[
+            WarehouseDelayFileStats(
+                filename="part-1.xlsx",
+                canonical_row_name="Невинномысск",
+                processed_rows=4,
+                no_assignment_rows=2,
+                invalid_hours_rows=0,
+                matched_by="filename",
+            )
+        ],
+        skipped_files=[],
+    )
+
+    async def fake_yadisk_list_files(*args, **kwargs):
+        return [{"name": "part-1.xlsx", "path": "disk:/BOT_UPLOADS/warehouse_delay/part-1.xlsx"}]
+
+    async def fake_download_and_process(files):
+        return aggregation
+
+    monkeypatch.setattr(handlers_module, "yadisk_list_files", fake_yadisk_list_files)
+    monkeypatch.setattr(
+        handler,
+        "_download_and_process_warehouse_delay_files",
+        fake_download_and_process,
+    )
+    monkeypatch.setattr(
+        handlers_module,
+        "build_warehouse_delay_sheet_matrix",
+        lambda *args, **kwargs: [["row"]],
+    )
+    monkeypatch.setattr(
+        handlers_module,
+        "update_warehouse_delay_sheet",
+        lambda *args, **kwargs: None,
+    )
+
+    asyncio.run(handler._run_warehouse_delay_multiple(message, user))
+
+    assert len(message.status_messages) == 1
+    edit_text, kwargs = message.status_messages[0].edit_calls[0]
+    assert "Сводная по задержке склада обновлена." in edit_text
+    assert "Ссылка на таблицу" in edit_text
+    assert kwargs == {
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True,
+    }

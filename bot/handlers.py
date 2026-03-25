@@ -464,22 +464,30 @@ class BotHandlers:
                 if aggregation.skipped_files:
                     skipped_messages = "\n".join(
                         [
-                            f'Файл "{filename}" непонятен, поэтому я его не прочитал. Остальные файлы обработал.'
+                            f'Файл "{escape(filename)}" непонятен, поэтому я его не прочитал. Остальные файлы обработал.'
                             for filename in aggregation.skipped_files
                         ]
                     )
-                    await status_message.edit_text(
+                    result_message = (
                         "Сводная по задержке склада обновлена. "
                         f"Прочитано файлов: {aggregation.processed_files_count}. "
                         f"Пропущено файлов: {aggregation.skipped_files_count}.\n"
                         f"{skipped_messages}"
                     )
                 else:
-                    await status_message.edit_text(
+                    result_message = (
                         "Сводная по задержке склада обновлена. "
                         f"Прочитано файлов: {aggregation.processed_files_count}. "
                         f"Пропущено файлов: {aggregation.skipped_files_count}."
                     )
+                link_html = self._sheet_link_html()
+                if link_html:
+                    result_message += f"\n{link_html}"
+                await status_message.edit_text(
+                    result_message,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
 
                 logger.info(
                     "Warehouse delay summary updated user_id=%s username=%s processed=%s skipped=%s worksheet=%s",
@@ -638,7 +646,14 @@ class BotHandlers:
                 )
                 if skipped_blocks:
                     result_message += f"\nПропущено строк с неизвестным блоком: {skipped_blocks}."
-                await status_message.edit_text(result_message)
+                link_html = self._sheet_link_html()
+                if link_html:
+                    result_message += f"\n{link_html}"
+                await status_message.edit_text(
+                    result_message,
+                    parse_mode="HTML",
+                    disable_web_page_preview=True,
+                )
 
                 logger.info(
                     "Warehouse delay single updated user_id=%s username=%s file=%s processed=%s invalid_hours=%s skipped_unknown_blocks=%s worksheet=%s",
