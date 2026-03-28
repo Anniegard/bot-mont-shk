@@ -5,6 +5,7 @@ from pathlib import Path
 
 from telegram.ext import Application
 
+from bot.constants import APP_VERSION
 from bot.config import load_config
 from bot.db import init_db
 from bot.handlers import BotHandlers
@@ -20,6 +21,7 @@ def main() -> None:
 
     gclient = authorize_client(config.google_credentials_path)
     logger = logging.getLogger(__name__)
+    logger.info("Bot_Mont_SHK v%s", APP_VERSION)
 
     try:
         sync_summary = sync_cases_from_master_sheet(

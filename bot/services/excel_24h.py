@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
@@ -219,12 +220,17 @@ def build_24h_table(
         min_forecast = min(forecasts)
         forecast_text = min_forecast.strftime("%d.%m.%Y %H:%M")
         forecast_text = forecast_text.lstrip("’‘'").strip()
+        cost_out = (
+            int(round(cost_sum))
+            if math.isfinite(cost_sum)
+            else 0
+        )
         rows.append(
             [
                 tare_id,
                 "\n".join(ids),
                 len(ids),
-                cost_sum,
+                cost_out,
                 forecast_text,
             ]
         )

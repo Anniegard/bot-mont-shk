@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+APP_VERSION = "1.0.0"
+
 CASE_ID_COLUMN_NAME = "case_id"
 CASES_MASTER_SHEET_NAME = "Разбор потерь исх. потока"
 MASTER_CASES_SHEET_NAME = CASES_MASTER_SHEET_NAME

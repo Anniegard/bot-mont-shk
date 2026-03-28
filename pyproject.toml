@@ -1,0 +1,18 @@
+[project]
+name = "bot-mont-shk"
+version = "1.0.0"
+requires-python = ">=3.11"
+description = "Telegram bot + Google Sheets (internal tooling)"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["bot", "tests", "."]
+exclude = [".venv", "legacy"]
+
+[tool.ruff.lint]
+# CI uses --select F,E9; expand locally when ready
+select = ["F", "E9"]
+
+[tool.ruff.format]
+quote-style = "double"

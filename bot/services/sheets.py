@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any, List, Optional
@@ -45,13 +46,90 @@ def _normalize_export_cell(value: Any) -> str:
     return normalized or ""
 
 
-def _normalize_export_rows(rows: List[List], width: int) -> list[list[str]]:
-    normalized_rows: list[list[str]] = []
+def _strip_leading_apostrophe(text: str) -> str:
+    s = text.strip()
+    while s and s[0] in "'\u2018\u2019\u2032":
+        s = s[1:].strip()
+    return s
+
+
+def _sheet_scalar_for_export(value: Any) -> str | int | float:
+    """Значение для API Sheets: числа — как int/float, не строки (иначе ячейка «текст»)."""
+    if value is None:
+        return ""
+    try:
+        import pandas as pd
+
+        if pd.isna(value):
+            return ""
+    except Exception:
+        pass
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, str):
+        return _strip_leading_apostrophe(value)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if math.isfinite(value) and value == int(value):
+            return int(value)
+        return value
+    try:
+        import numpy as np
+
+        if isinstance(value, np.integer):
+            return int(value)
+        if isinstance(value, np.floating):
+            f = float(value)
+            if math.isfinite(f) and abs(f - round(f)) < 1e-9:
+                return int(round(f))
+            return f
+    except Exception:
+        pass
+    return _strip_leading_apostrophe(str(value))
+
+
+def _parse_numeric_string_for_sheet(s: str) -> str | int | float:
+    """Колонки «Кол-во» / «Стоимость»: строки из Excel/тестов → числа для Sheets."""
+    t = _strip_leading_apostrophe(s)
+    if not t:
+        return ""
+    normalized = t.replace(" ", "").replace(",", ".")
+    try:
+        val = float(normalized)
+        if not math.isfinite(val):
+            return s
+        if abs(val - round(val)) < 1e-9:
+            return int(round(val))
+        return val
+    except ValueError:
+        return s
+
+
+def _normalize_export_rows(
+    rows: List[List],
+    width: int,
+    *,
+    numeric_columns: frozenset[int] | None = None,
+) -> list[list[Any]]:
+    """Строки экспорта: колонки 2 и 3 — «Кол-во» и «Стоимость» как числа (индексы 0-based)."""
+    if numeric_columns is None:
+        numeric_columns = frozenset({2, 3})
+    normalized_rows: list[list[Any]] = []
     for row in rows:
         padded_row = list(row[:width])
         if len(padded_row) < width:
             padded_row.extend([""] * (width - len(padded_row)))
-        normalized_rows.append([_normalize_export_cell(value) for value in padded_row])
+        out: list[Any] = []
+        for col_idx, value in enumerate(padded_row):
+            cell = _sheet_scalar_for_export(value)
+            if col_idx in numeric_columns:
+                if isinstance(cell, str):
+                    cell = _parse_numeric_string_for_sheet(cell)
+                elif isinstance(cell, float) and cell == int(cell):
+                    cell = int(cell)
+            out.append(cell)
+        normalized_rows.append(out)
     return normalized_rows
 
 

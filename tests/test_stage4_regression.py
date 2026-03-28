@@ -342,4 +342,4 @@ def test_update_tables_left_only_uses_sheet1_when_worksheet_name_is_empty() -> N
         "B3:E3",
         "B5:E5",
     ]
-    assert master.batch_update_calls[0][2]["values"] == [["gofra", "", "1", ""]]
+    assert master.batch_update_calls[0][2]["values"] == [["gofra", "", 1, ""]]

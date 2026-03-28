@@ -1,4 +1,10 @@
+.venv/
 .env
+
+# Cursor IDE, агенты и локальные шаблоны (не в репозитории)
+.cursor/
+AGENTS.md
+tools/cursor-portable/
 *.log
 legacy/bot_logs.txt
 uploaded_file_*.xlsx
