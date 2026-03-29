@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 
 @dataclass
 class Config:
-    telegram_token: str
+    telegram_token: str | None
     spreadsheet_id: str
     google_credentials_path: Path
     db_path: Path
@@ -24,6 +24,14 @@ class Config:
     yandex_allowed_exts: Tuple[str, ...] = (".xlsx", ".xls", ".zip")
     yandex_max_mb: int = 200
     warehouse_delay_worksheet_name: str | None = None
+    public_base_url: str | None = None
+    web_secret_key: str | None = None
+    web_host: str = "127.0.0.1"
+    web_port: int = 8000
+    web_rate_limit_per_minute: int = 20
+    web_max_upload_mb: int = 20
+    web_admin_username: str | None = None
+    web_admin_password: str | None = None
 
 
 def _resolve_credentials_path(path_value: str, root_dir: Path) -> Path:
@@ -60,7 +68,12 @@ def parse_admin_user_ids(
     return tuple(values)
 
 
-def load_config(env_path: str | None = None) -> Config:
+def load_config(
+    env_path: str | None = None,
+    *,
+    require_telegram_token: bool = True,
+    require_web_auth: bool = False,
+) -> Config:
     """
     Load configuration from environment (optionally from .env).
     Mandatory: TELEGRAM_TOKEN (or TELEGRAM_BOT_TOKEN), SPREADSHEET_ID, GOOGLE_CREDENTIALS_PATH.
@@ -77,6 +90,8 @@ def load_config(env_path: str | None = None) -> Config:
         env_file = (root_dir / env_file).resolve()
     if env_file.exists():
         load_dotenv(env_file, override=False)
+    elif env_path or env_override:
+        pass
     else:
         load_dotenv(override=False)
 
@@ -107,14 +122,28 @@ def load_config(env_path: str | None = None) -> Config:
     warehouse_delay_worksheet_name = (
         os.getenv("WAREHOUSE_DELAY_WORKSHEET_NAME") or "Выгрузка задержка склада"
     )
+    public_base_url = os.getenv("PUBLIC_BASE_URL") or None
+    web_secret_key = os.getenv("WEB_SECRET_KEY") or None
+    web_host = os.getenv("WEB_HOST") or "127.0.0.1"
+    web_port = int(os.getenv("WEB_PORT") or 8000)
+    web_rate_limit_per_minute = int(os.getenv("WEB_RATE_LIMIT_PER_MINUTE") or 20)
+    web_max_upload_mb = int(os.getenv("WEB_MAX_UPLOAD_MB") or 20)
+    web_admin_username = os.getenv("WEB_ADMIN_USERNAME") or None
+    web_admin_password = os.getenv("WEB_ADMIN_PASSWORD") or None
 
     missing = []
-    if not telegram_token:
+    if require_telegram_token and not telegram_token:
         missing.append("TELEGRAM_TOKEN (or TELEGRAM_BOT_TOKEN)")
     if not spreadsheet_id:
         missing.append("SPREADSHEET_ID")
     if not credentials_path_value:
         missing.append("GOOGLE_CREDENTIALS_PATH")
+    if require_web_auth and not web_secret_key:
+        missing.append("WEB_SECRET_KEY")
+    if require_web_auth and not web_admin_username:
+        missing.append("WEB_ADMIN_USERNAME")
+    if require_web_auth and not web_admin_password:
+        missing.append("WEB_ADMIN_PASSWORD")
 
     if missing:
         raise ValueError(
@@ -142,4 +171,12 @@ def load_config(env_path: str | None = None) -> Config:
         yandex_allowed_exts=yandex_allowed_exts,
         yandex_max_mb=yandex_max_mb,
         warehouse_delay_worksheet_name=warehouse_delay_worksheet_name,
+        public_base_url=public_base_url,
+        web_secret_key=web_secret_key,
+        web_host=web_host,
+        web_port=web_port,
+        web_rate_limit_per_minute=web_rate_limit_per_minute,
+        web_max_upload_mb=web_max_upload_mb,
+        web_admin_username=web_admin_username,
+        web_admin_password=web_admin_password,
     )

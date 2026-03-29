@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{% block title %}{{ site_name }}{% endblock %}</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/htmx.org@1.9.12"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="{{ request.url_for('static', path='site.css') }}">
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 antialiased">
+    <div class="page-glow"></div>
+    <header class="sticky top-0 z-30 border-b border-white/10 bg-slate-950/80 backdrop-blur-xl">
+        <div class="mx-auto flex max-w-7xl items-center justify-between px-6 py-4">
+            <a href="/" class="flex items-center gap-3 font-semibold tracking-tight text-white">
+                <span class="flex h-10 w-10 items-center justify-center rounded-2xl bg-fuchsia-500/20 text-fuchsia-200 ring-1 ring-fuchsia-400/40">A</span>
+                <span>
+                    <span class="block text-sm uppercase tracking-[0.35em] text-slate-400">AnniLand</span>
+                    <span class="block text-base">Bot Mirror</span>
+                </span>
+            </a>
+            <nav class="flex items-center gap-3 text-sm text-slate-300">
+                <a class="nav-link" href="/">Главная</a>
+                {% if current_user %}
+                <a class="nav-link" href="/app">Workspace</a>
+                <a class="nav-link" href="/app/help">Help</a>
+                <a class="nav-link" href="/app/admin">Admin</a>
+                <form method="post" action="/logout" class="inline-flex">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button class="rounded-full border border-white/15 px-4 py-2 text-slate-200 transition hover:border-fuchsia-400/60 hover:text-white" type="submit">Выйти</button>
+                </form>
+                {% else %}
+                <a class="rounded-full border border-white/15 px-4 py-2 text-slate-200 transition hover:border-fuchsia-400/60 hover:text-white" href="/login">Войти</a>
+                {% endif %}
+            </nav>
+        </div>
+    </header>
+    <main>
+        {% block content %}{% endblock %}
+    </main>
+</body>
+</html>

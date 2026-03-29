@@ -1,0 +1,180 @@
+<div id="workspace-shell" class="grid gap-6 lg:grid-cols-[1.05fr_0.95fr]">
+    <section class="rounded-3xl border border-white/10 bg-slate-900/70 p-6 backdrop-blur">
+        <div class="flex items-center justify-between gap-4">
+            <div>
+                <h2 class="text-2xl font-semibold">Рабочая зона</h2>
+                <p class="mt-1 text-sm text-slate-400">Сессия запоминает текущий режим и нужные поднастройки.</p>
+            </div>
+            <a href="/help/yadisk" class="rounded-full border border-white/10 px-4 py-2 text-sm text-slate-200 hover:border-sky-300/40">
+                Помощь по Я.Диску
+            </a>
+        </div>
+
+        {% if notice_message %}
+        <div class="mt-6 rounded-2xl border border-emerald-400/30 bg-emerald-400/10 px-4 py-3 text-sm text-emerald-100">
+            {{ notice_message }}
+        </div>
+        {% endif %}
+
+        {% if error_message %}
+        <div class="mt-6 rounded-2xl border border-rose-400/30 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">
+            {{ error_message }}
+        </div>
+        {% endif %}
+
+        <div class="mt-6 flex flex-wrap gap-2">
+            <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm text-slate-200">
+                Режим: {{ flow.mode or "не выбран" }}
+            </span>
+            <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm text-slate-200">
+                Выгрузка: {{ flow.no_move_export_mode or "не выбрана" }}
+            </span>
+            <span class="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-sm text-slate-200">
+                Подрежим склада: {{ flow.warehouse_delay_mode or "не выбран" }}
+            </span>
+        </div>
+
+        {% if flow.mode == web_mode_no_move %}
+        <div class="mt-8">
+            <h3 class="text-lg font-medium">Шаг 1. Тип выгрузки</h3>
+            <div class="mt-4 grid gap-3 sm:grid-cols-3">
+                {% for option_value, option_label in no_move_export_options %}
+                <form hx-post="/actions/no-move-export" hx-target="#workspace-shell" hx-swap="outerHTML" class="rounded-2xl border border-white/10 bg-white/5 p-3">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="export_mode" value="{{ option_value }}">
+                    <button type="submit" class="w-full text-left">
+                        <div class="text-base font-medium">{{ option_label }}</div>
+                        <div class="mt-1 text-sm text-slate-400">{{ option_value }}</div>
+                    </button>
+                </form>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if flow.mode == web_mode_warehouse_delay %}
+        <div class="mt-8">
+            <h3 class="text-lg font-medium">Шаг 1. Способ обработки</h3>
+            <div class="mt-4 grid gap-3 sm:grid-cols-2">
+                {% for option_value, option_label in warehouse_delay_options %}
+                <form hx-post="/actions/warehouse-delay-mode" hx-target="#workspace-shell" hx-swap="outerHTML" class="rounded-2xl border border-white/10 bg-white/5 p-3">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="warehouse_delay_mode" value="{{ option_value }}">
+                    <button type="submit" class="w-full text-left">
+                        <div class="text-base font-medium">{{ option_label }}</div>
+                        <div class="mt-1 text-sm text-slate-400">{{ option_value }}</div>
+                    </button>
+                </form>
+                {% endfor %}
+            </div>
+        </div>
+        {% endif %}
+
+        {% if flow.can_accept_file_or_url %}
+        <div class="mt-8 grid gap-4">
+            <div class="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <h3 class="text-lg font-medium">Шаг 2. Загрузить файл</h3>
+                <form
+                    hx-post="/actions/upload"
+                    hx-target="#workspace-shell"
+                    hx-swap="outerHTML"
+                    hx-encoding="multipart/form-data"
+                    class="mt-4 grid gap-3"
+                >
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="file" name="upload" accept=".xlsx,.xls,.zip" class="rounded-xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm">
+                    <button type="submit" class="rounded-xl bg-sky-400 px-4 py-3 font-medium text-slate-950 transition hover:bg-sky-300">
+                        Обработать файл
+                    </button>
+                </form>
+            </div>
+
+            <div class="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <h3 class="text-lg font-medium">Шаг 3. Или обработать по ссылке</h3>
+                <form hx-post="/actions/url" hx-target="#workspace-shell" hx-swap="outerHTML" class="mt-4 grid gap-3">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="url" name="url" placeholder="https://..." class="rounded-xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm">
+                    <button type="submit" class="rounded-xl border border-sky-300/40 px-4 py-3 font-medium text-sky-100 transition hover:border-sky-200">
+                        Скачать и обработать
+                    </button>
+                </form>
+            </div>
+
+            <div class="rounded-2xl border border-white/10 bg-white/5 p-4">
+                <h3 class="text-lg font-medium">Шаг 4. Взять последний файл с Я.Диска</h3>
+                <form hx-post="/actions/yadisk-latest" hx-target="#workspace-shell" hx-swap="outerHTML" class="mt-4">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="rounded-xl border border-fuchsia-300/40 px-4 py-3 font-medium text-fuchsia-100 transition hover:border-fuchsia-200">
+                        Подтянуть последний файл
+                    </button>
+                </form>
+            </div>
+        </div>
+        {% elif flow.active_processing_mode == "warehouse_delay_multiple" %}
+        <div class="mt-8 rounded-2xl border border-white/10 bg-white/5 p-4">
+            <h3 class="text-lg font-medium">Запуск пакетной обработки</h3>
+            <p class="mt-2 text-sm text-slate-400">Сайт прочитает все подходящие Excel/zip из `YANDEX_WAREHOUSE_DELAY_DIR` и обновит отдельный лист.</p>
+            <form hx-post="/actions/warehouse-delay-multiple" hx-target="#workspace-shell" hx-swap="outerHTML" class="mt-4">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button type="submit" class="rounded-xl bg-fuchsia-400 px-4 py-3 font-medium text-slate-950 transition hover:bg-fuchsia-300">
+                    Запустить пакетную обработку
+                </button>
+            </form>
+        </div>
+        {% else %}
+        <div class="mt-8 rounded-2xl border border-dashed border-white/15 bg-white/[0.03] p-6 text-sm text-slate-400">
+            Выбери карточку режима сверху. Для `Без движения` потом выбери тип выгрузки, а для `Задержки склада` укажи подрежим.
+        </div>
+        {% endif %}
+
+        <div class="mt-8 rounded-2xl border border-white/10 bg-slate-950/50 p-4 text-sm text-slate-300">
+            <div class="font-medium text-slate-100">Подсказка по Я.Диску</div>
+            <pre class="mt-3 whitespace-pre-wrap font-sans text-sm text-slate-300">{{ help_text }}</pre>
+        </div>
+    </section>
+
+    <section class="rounded-3xl border border-white/10 bg-white/5 p-6 backdrop-blur">
+        <h2 class="text-2xl font-semibold">Результат</h2>
+        {% if result %}
+        <div class="mt-6 rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-5">
+            <div class="text-sm uppercase tracking-[0.2em] text-emerald-200/80">{{ result.kind }}</div>
+            <h3 class="mt-2 text-xl font-medium">{{ result.summary }}</h3>
+            {% if result.source_name %}
+            <p class="mt-2 text-sm text-slate-300">Источник: {{ result.source_name }}</p>
+            {% endif %}
+        </div>
+
+        {% if result.metrics %}
+        <div class="mt-4 grid gap-3 sm:grid-cols-2">
+            {% for metric in result.metrics %}
+            <div class="rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+                <div class="text-sm text-slate-400">{{ metric.label }}</div>
+                <div class="mt-2 text-2xl font-semibold">{{ metric.value }}</div>
+            </div>
+            {% endfor %}
+        </div>
+        {% endif %}
+
+        {% if result.details %}
+        <div class="mt-4 rounded-2xl border border-white/10 bg-slate-950/60 p-4">
+            <div class="text-sm font-medium text-slate-100">Детали</div>
+            <ul class="mt-3 space-y-2 text-sm text-slate-300">
+                {% for detail in result.details %}
+                <li>{{ detail }}</li>
+                {% endfor %}
+            </ul>
+        </div>
+        {% endif %}
+
+        {% if result.sheet_url %}
+        <a href="{{ result.sheet_url }}" target="_blank" rel="noopener noreferrer" class="mt-4 inline-flex rounded-xl bg-sky-400 px-4 py-3 font-medium text-slate-950 transition hover:bg-sky-300">
+            Открыть Google Sheets
+        </a>
+        {% endif %}
+        {% else %}
+        <div class="mt-6 rounded-2xl border border-dashed border-white/15 bg-slate-950/50 p-6 text-sm text-slate-400">
+            Здесь появится итог обработки, основные метрики и ссылка на таблицу.
+        </div>
+        {% endif %}
+    </section>
+</div>

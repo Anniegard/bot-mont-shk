@@ -6,20 +6,16 @@ from pathlib import Path
 from telegram.ext import Application
 
 from bot.constants import APP_VERSION
-from bot.config import load_config
-from bot.db import init_db
 from bot.handlers import BotHandlers
-from bot.logging_config import setup_logging
+from bot.runtime import build_runtime
 from bot.services.case_sync import sync_cases_from_master_sheet
-from bot.services.sheets import authorize_client
 
 
 def main() -> None:
-    config = load_config()
-    setup_logging(config.telegram_token)
-    db_path = init_db(config.db_path)
-
-    gclient = authorize_client(config.google_credentials_path)
+    runtime = build_runtime(require_telegram_token=True)
+    config = runtime.config
+    db_path = runtime.db_path
+    gclient = runtime.gspread_client
     logger = logging.getLogger(__name__)
     logger.info("Bot_Mont_SHK v%s", APP_VERSION)
 
