@@ -1,0 +1,15 @@
+[Unit]
+Description=Bot Mont SHK telegram bot
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+WorkingDirectory=/opt/anniland/Bot_Mont_SHK
+Environment=BOT_CONFIG_FILE=/opt/anniland/.env
+ExecStart=/opt/anniland/Bot_Mont_SHK/.venv/bin/python /opt/anniland/Bot_Mont_SHK/main.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

@@ -1,8 +1,11 @@
 .venv/
 .env
 
-# Cursor IDE, агенты и локальные шаблоны (не в репозитории)
+# Cursor IDE: rules, skills, hooks, composer, индексация, агенты (локально)
 .cursor/
+.cursorignore
+.cursorrules
+.cursorindexingignore
 AGENTS.md
 tools/cursor-portable/
 *.log
@@ -26,4 +29,3 @@ data/*.db
 data/*.db-*
 !data/block_ids.txt
 !data/block_ids.txt.example
-!legacy/bot_logs.txt

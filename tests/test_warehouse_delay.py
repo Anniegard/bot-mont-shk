@@ -11,6 +11,7 @@ import pytest
 import bot.handlers as handlers_module
 from bot.config import Config
 from bot.handlers import BotHandlers
+from bot.services.processing import WorkflowOutcome
 from bot.services.sheets import update_warehouse_delay_sheet
 from bot.services.warehouse_delay import (
     CANONICAL_ROW_ORDER,
@@ -507,37 +508,19 @@ def test_single_warehouse_delay_success_message_includes_sheet_link(tmp_path, mo
         message=message,
     )
     context = SimpleNamespace(user_data={})
-    aggregation = WarehouseDelayAggregationResult(
-        all_rows=make_empty_aggregation_map(),
-        no_assignment_rows=make_empty_aggregation_map(),
-        processed_files=[
-            WarehouseDelayFileStats(
-                filename="single.xlsx",
-                canonical_row_name="Невинномысск",
-                processed_rows=7,
-                no_assignment_rows=3,
-                invalid_hours_rows=0,
-                matched_by="structure",
-                skipped_unknown_rows=2,
-            )
-        ],
-        skipped_files=[],
-    )
+    async def fake_process_local_source(*args, **kwargs):
+        return WorkflowOutcome(
+            title="Задержка склада",
+            message=(
+                "Сводная по задержке склада обновлена из одного файла."
+                "\nСсылка на таблицу"
+            ),
+        )
 
     monkeypatch.setattr(
-        handlers_module,
-        "process_warehouse_delay_consolidated_file",
-        lambda *args, **kwargs: aggregation,
-    )
-    monkeypatch.setattr(
-        handlers_module,
-        "build_warehouse_delay_sheet_matrix",
-        lambda *args, **kwargs: [["row"]],
-    )
-    monkeypatch.setattr(
-        handlers_module,
-        "update_warehouse_delay_sheet",
-        lambda *args, **kwargs: None,
+        handler.processing_service,
+        "process_local_source",
+        fake_process_local_source,
     )
 
     asyncio.run(
@@ -585,6 +568,12 @@ def test_multiple_warehouse_delay_success_message_includes_sheet_link(tmp_path, 
     async def fake_download_and_process(files):
         return aggregation
 
+    async def fake_build_outcome(*args, **kwargs):
+        return WorkflowOutcome(
+            title="Задержка склада",
+            message="Сводная по задержке склада обновлена.\nСсылка на таблицу",
+        )
+
     monkeypatch.setattr(handlers_module, "yadisk_list_files", fake_yadisk_list_files)
     monkeypatch.setattr(
         handler,
@@ -592,14 +581,9 @@ def test_multiple_warehouse_delay_success_message_includes_sheet_link(tmp_path, 
         fake_download_and_process,
     )
     monkeypatch.setattr(
-        handlers_module,
-        "build_warehouse_delay_sheet_matrix",
-        lambda *args, **kwargs: [["row"]],
-    )
-    monkeypatch.setattr(
-        handlers_module,
-        "update_warehouse_delay_sheet",
-        lambda *args, **kwargs: None,
+        handler.processing_service,
+        "build_warehouse_delay_multiple_outcome",
+        fake_build_outcome,
     )
 
     asyncio.run(handler._run_warehouse_delay_multiple(message, user))

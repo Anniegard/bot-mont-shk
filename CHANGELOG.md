@@ -1,5 +1,24 @@
 # Changelog
 
+## [1.1.0] — 2026-03-30
+
+Веб-интерфейс и рефакторинг обработки.
+
+### Добавлено
+
+- Веб-приложение **AnniLand** на FastAPI (`web/`, точки входа `main_web.py`, `web_main.py`): сессии, CSRF, rate limit на логин и обработку, статика и шаблоны.
+- Слой `bot/runtime.py`, сервисы `bot/services/processing.py` и `bot/services/workflows.py` для общей логики Telegram и web.
+- Примеры деплоя: `deploy/` (nginx, systemd).
+- Тесты: `tests/test_web_app.py`, `tests/test_workflows.py`; расширены сценарии склада.
+
+### Изменено
+
+- Конфигурация: переменные `WEB_*`, опциональный запуск без Telegram-токена для веба; обновлены `README.md`, `.env.example`, зависимости.
+
+### Прочее
+
+- В `.gitignore` дополнены шаблоны файлов Cursor (`.cursorignore`, `.cursorrules` и т.д.); лог `legacy/bot_logs.txt` не предназначен для коммита.
+
 ## [1.0.0] — 2026-03-28
 
 Первый помеченный релиз.

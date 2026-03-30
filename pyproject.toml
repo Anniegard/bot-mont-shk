@@ -2,7 +2,7 @@
 name = "bot-mont-shk"
 version = "1.0.0"
 requires-python = ">=3.11"
-description = "Telegram bot + Google Sheets (internal tooling)"
+description = "Telegram bot + FastAPI website + Google Sheets tooling"
 
 [tool.ruff]
 line-length = 100
