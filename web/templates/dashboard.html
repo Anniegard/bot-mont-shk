@@ -3,6 +3,10 @@
 {% block title %}Рабочая зона | AnniLand{% endblock %}
 
 {% block content %}
+<div id="processing-indicator" class="processing-indicator" aria-hidden="true">
+    <div class="processing-indicator__bar"></div>
+    <div class="processing-indicator__text">Обработка файла... это может занять до пары минут</div>
+</div>
 <section class="mx-auto max-w-7xl px-6 py-12">
     <div class="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
@@ -120,4 +124,53 @@
         </aside>
     </div>
 </section>
+<script>
+    (() => {
+        const indicator = document.getElementById("processing-indicator");
+        if (!indicator || typeof htmx === "undefined") {
+            return;
+        }
+
+        let activeRequests = 0;
+        const showIndicator = () => {
+            indicator.classList.add("is-visible");
+            indicator.setAttribute("aria-hidden", "false");
+            document.body.classList.add("is-processing");
+        };
+        const hideIndicator = () => {
+            indicator.classList.remove("is-visible");
+            indicator.setAttribute("aria-hidden", "true");
+            document.body.classList.remove("is-processing");
+        };
+        const isProcessForm = (node) => {
+            if (!(node instanceof Element)) {
+                return false;
+            }
+            const form = node.closest("form");
+            return !!(form && form.getAttribute("hx-post") === "/app/actions/process");
+        };
+
+        document.body.addEventListener("htmx:beforeRequest", (event) => {
+            if (!isProcessForm(event.target)) {
+                return;
+            }
+            activeRequests += 1;
+            showIndicator();
+        });
+
+        const finalizeRequest = (event) => {
+            if (!isProcessForm(event.target)) {
+                return;
+            }
+            activeRequests = Math.max(0, activeRequests - 1);
+            if (activeRequests === 0) {
+                hideIndicator();
+            }
+        };
+
+        document.body.addEventListener("htmx:afterRequest", finalizeRequest);
+        document.body.addEventListener("htmx:responseError", finalizeRequest);
+        document.body.addEventListener("htmx:sendError", finalizeRequest);
+    })();
+</script>
 {% endblock %}
