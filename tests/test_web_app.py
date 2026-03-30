@@ -44,16 +44,6 @@ class FakeProcessingService:
             payload={"filename": file_info.filename},
         )
 
-    async def process_url_source(
-        self,
-        expected: str,
-        url: str,
-        *,
-        no_move_export_mode: str | None = None,
-    ) -> WorkflowOutcome:
-        self.calls.append((expected, "url", no_move_export_mode, url))
-        return WorkflowOutcome(title="Test url", message="URL обработан.")
-
     async def process_latest_yadisk_file(
         self,
         expected: str,
@@ -71,7 +61,12 @@ class FakeProcessingService:
         )
 
 
-def make_runtime(tmp_path: Path) -> AppRuntime:
+def make_runtime(
+    tmp_path: Path,
+    *,
+    web_trust_proxy_headers: bool = False,
+    web_rate_limit_per_minute: int = 20,
+) -> AppRuntime:
     config = Config(
         telegram_token=None,
         spreadsheet_id="spreadsheet-id",
@@ -79,8 +74,12 @@ def make_runtime(tmp_path: Path) -> AppRuntime:
         db_path=tmp_path / "bot.db",
         public_base_url="http://testserver",
         web_secret_key="secret-key",
+        web_rate_limit_per_minute=web_rate_limit_per_minute,
+        web_trust_proxy_headers=web_trust_proxy_headers,
         web_admin_username="boss",
         web_admin_password="pass123",
+        web_user_username="webuser",
+        web_user_password="userpass",
     )
     return AppRuntime(config=config, db_path=config.db_path, gspread_client=object())
 
@@ -119,7 +118,7 @@ def test_login_and_file_processing_flow(tmp_path: Path) -> None:
 
     dashboard_response = client.get("/app")
     assert dashboard_response.status_code == 200
-    assert "Protected app" in dashboard_response.text
+    assert "Защищённое приложение" in dashboard_response.text
     dashboard_csrf = dashboard_response.text.split('name="csrf_token" value="', 1)[1].split(
         '"',
         1,
@@ -155,6 +154,8 @@ def test_load_config_supports_web_only_runtime(tmp_path: Path, monkeypatch) -> N
     monkeypatch.setenv("WEB_SECRET_KEY", "secret-key")
     monkeypatch.setenv("WEB_ADMIN_USERNAME", "boss")
     monkeypatch.setenv("WEB_ADMIN_PASSWORD", "pass123")
+    monkeypatch.setenv("WEB_USER_USERNAME", "webuser")
+    monkeypatch.setenv("WEB_USER_PASSWORD", "userpass")
 
     config = load_config(
         env_path=str(tmp_path / "isolated.env"),
@@ -165,6 +166,78 @@ def test_load_config_supports_web_only_runtime(tmp_path: Path, monkeypatch) -> N
     assert config.telegram_token in {None, ""}
     assert config.web_secret_key == "secret-key"
     assert config.web_admin_username == "boss"
+    assert config.web_user_username == "webuser"
+
+
+def test_web_user_cannot_access_admin_page(tmp_path: Path) -> None:
+    app = create_app(
+        runtime=make_runtime(tmp_path),
+        processing_service=FakeProcessingService(tmp_path / "tmp"),
+    )
+    client = TestClient(app)
+    login_page = client.get("/login")
+    csrf_token = login_page.text.split('name="csrf_token" value="', 1)[1].split('"', 1)[0]
+
+    client.post(
+        "/login",
+        data={
+            "username": "webuser",
+            "password": "userpass",
+            "csrf_token": csrf_token,
+        },
+        follow_redirects=False,
+    )
+
+    response = client.get("/app/admin")
+    assert response.status_code == 403
+    assert "Нет прав администратора" in response.text
+
+
+def test_web_user_can_use_dashboard(tmp_path: Path) -> None:
+    app = create_app(
+        runtime=make_runtime(tmp_path),
+        processing_service=FakeProcessingService(tmp_path / "tmp"),
+    )
+    client = TestClient(app)
+    login_page = client.get("/login")
+    csrf_token = login_page.text.split('name="csrf_token" value="', 1)[1].split('"', 1)[0]
+
+    client.post(
+        "/login",
+        data={
+            "username": "webuser",
+            "password": "userpass",
+            "csrf_token": csrf_token,
+        },
+    )
+
+    dashboard = client.get("/app")
+    assert dashboard.status_code == 200
+    assert "Защищённое приложение" in dashboard.text
+
+
+def test_admin_can_access_admin_page(tmp_path: Path) -> None:
+    app = create_app(
+        runtime=make_runtime(tmp_path),
+        processing_service=FakeProcessingService(tmp_path / "tmp"),
+    )
+    client = TestClient(app)
+    login_page = client.get("/login")
+    csrf_token = login_page.text.split('name="csrf_token" value="', 1)[1].split('"', 1)[0]
+
+    client.post(
+        "/login",
+        data={
+            "username": "boss",
+            "password": "pass123",
+            "csrf_token": csrf_token,
+        },
+    )
+
+    response = client.get("/app/admin")
+    assert response.status_code == 200
+    assert "Защищённая административная зона" in response.text
+    assert "boss" in response.text
 
 
 def test_login_requires_valid_csrf(tmp_path: Path) -> None:
@@ -209,7 +282,29 @@ def test_process_action_requires_valid_csrf(tmp_path: Path) -> None:
     assert response.status_code == 400
 
 
-def test_client_ip_prefers_x_real_ip_over_forwarded_for() -> None:
+def test_client_ip_ignores_proxy_headers_when_trust_disabled(monkeypatch) -> None:
+    monkeypatch.setenv("WEB_TRUST_PROXY_HEADERS", "false")
+    request = Request(
+        {
+            "type": "http",
+            "method": "GET",
+            "path": "/",
+            "headers": [
+                (b"x-forwarded-for", b"198.51.100.10, 203.0.113.7"),
+                (b"x-real-ip", b"203.0.113.7"),
+            ],
+            "client": ("127.0.0.1", 12345),
+            "server": ("testserver", 80),
+            "scheme": "http",
+            "query_string": b"",
+        }
+    )
+
+    assert client_ip(request) == "127.0.0.1"
+
+
+def test_client_ip_uses_proxy_headers_when_trust_enabled(monkeypatch) -> None:
+    monkeypatch.setenv("WEB_TRUST_PROXY_HEADERS", "true")
     request = Request(
         {
             "type": "http",
@@ -227,3 +322,87 @@ def test_client_ip_prefers_x_real_ip_over_forwarded_for() -> None:
     )
 
     assert client_ip(request) == "203.0.113.7"
+
+
+def test_rate_limit_ignores_proxy_headers_when_trust_disabled(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("WEB_TRUST_PROXY_HEADERS", "false")
+    service = FakeProcessingService(tmp_path / "tmp")
+    app = create_app(
+        runtime=make_runtime(
+            tmp_path,
+            web_rate_limit_per_minute=1,
+            web_trust_proxy_headers=False,
+        ),
+        processing_service=service,
+    )
+    client = TestClient(app)
+
+    login_page = client.get("/login")
+    assert login_page.status_code == 200
+    csrf_token = login_page.text.split('name="csrf_token" value="', 1)[1].split('"', 1)[0]
+
+    headers1 = {
+        "x-real-ip": "203.0.113.7",
+        "x-forwarded-for": "198.51.100.10, 203.0.113.7",
+    }
+    resp1 = client.post(
+        "/login",
+        data={"username": "webuser", "password": "bad", "csrf_token": csrf_token},
+        headers=headers1,
+        follow_redirects=False,
+    )
+    assert resp1.status_code != 429
+
+    headers2 = {
+        "x-real-ip": "203.0.113.8",
+        "x-forwarded-for": "198.51.100.11, 203.0.113.8",
+    }
+    resp2 = client.post(
+        "/login",
+        data={"username": "webuser", "password": "bad", "csrf_token": csrf_token},
+        headers=headers2,
+        follow_redirects=False,
+    )
+    assert resp2.status_code == 429
+
+
+def test_rate_limit_respects_proxy_headers_when_trust_enabled(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("WEB_TRUST_PROXY_HEADERS", "true")
+    service = FakeProcessingService(tmp_path / "tmp")
+    app = create_app(
+        runtime=make_runtime(
+            tmp_path,
+            web_rate_limit_per_minute=1,
+            web_trust_proxy_headers=True,
+        ),
+        processing_service=service,
+    )
+    client = TestClient(app)
+
+    login_page = client.get("/login")
+    assert login_page.status_code == 200
+    csrf_token = login_page.text.split('name="csrf_token" value="', 1)[1].split('"', 1)[0]
+
+    headers1 = {"x-real-ip": "203.0.113.7"}
+    resp1 = client.post(
+        "/login",
+        data={"username": "webuser", "password": "bad", "csrf_token": csrf_token},
+        headers=headers1,
+        follow_redirects=False,
+    )
+    assert resp1.status_code != 429
+
+    headers2 = {"x-real-ip": "203.0.113.8"}
+    resp2 = client.post(
+        "/login",
+        data={"username": "webuser", "password": "bad", "csrf_token": csrf_token},
+        headers=headers2,
+        follow_redirects=False,
+    )
+    assert resp2.status_code != 429

@@ -100,7 +100,6 @@ async def process_action(
     source_kind: str = Form(...),
     csrf_token: str = Form(...),
     export_mode: str | None = Form(None),
-    url: str | None = Form(None),
     upload: UploadFile | None = File(None),
 ) -> HTMLResponse:
     redirect = _redirect_if_guest(request)
@@ -146,14 +145,6 @@ async def process_action(
                         source="web_upload",
                         source_path=str(temp_path),
                     ),
-                    no_move_export_mode=export_mode,
-                )
-            elif source_kind == "url":
-                if not (url or "").strip():
-                    raise WorkflowError("Вставьте ссылку на файл.")
-                outcome = await service.process_url_source(
-                    expected,
-                    (url or "").strip(),
                     no_move_export_mode=export_mode,
                 )
             elif source_kind == "yadisk_latest":

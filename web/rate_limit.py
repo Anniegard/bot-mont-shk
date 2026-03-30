@@ -31,7 +31,7 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
                 return HTMLResponse(
                     (
                         '<section class="panel-card border border-amber-400/30">'
-                        '<div class="panel-label">Rate limit</div>'
+                        '<div class="panel-label">Лимит запросов</div>'
                         '<h2 class="mt-3 text-2xl font-semibold text-white">Слишком много запросов</h2>'
                         '<div class="mt-4 whitespace-pre-line leading-7 text-slate-200">'
                         "Подождите минуту и повторите действие."

@@ -10,7 +10,14 @@ from bot.services.excel import (
     EXPORT_WITHOUT_TRANSFERS,
     EXPORT_WITH_TRANSFERS,
 )
-from web.auth import authenticate, current_user, is_authenticated, login_user, logout_user
+from web.auth import (
+    authenticate,
+    current_user,
+    is_authenticated,
+    is_web_admin,
+    login_user,
+    logout_user,
+)
 from web.dependencies import TEMPLATES, get_config, template_context
 from web.security import validate_csrf_token
 
@@ -129,6 +136,14 @@ async def admin_page(request: Request) -> HTMLResponse:
     redirect = _redirect_if_guest(request)
     if redirect:
         return redirect
+    config = get_config(request)
+    if not is_web_admin(request, config):
+        return TEMPLATES.TemplateResponse(
+            request,
+            "forbidden_admin.html",
+            template_context(request),
+            status_code=403,
+        )
     log_path = Path(__file__).resolve().parents[2] / "logs" / "bot.log"
     return TEMPLATES.TemplateResponse(
         request,

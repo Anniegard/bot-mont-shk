@@ -18,7 +18,7 @@ from bot.config import Config
 from bot.services.block_ids import load_block_ids
 from bot.services.excel import process_file
 from bot.services.excel_24h import build_24h_table, load_snapshot, process_24h_file, save_snapshot
-from bot.services.file_sources import download_from_url, maybe_extract_zip
+from bot.services.file_sources import maybe_extract_zip
 from bot.services.no_move_map import load_no_move_map, save_no_move_map
 from bot.services.sheets import update_tables, update_warehouse_delay_sheet
 from bot.services.warehouse_delay import (
@@ -139,45 +139,6 @@ class ProcessingService:
         finally:
             if prepared_path_obj != original_path:
                 self._cleanup_temp_artifacts(prepared_path_obj)
-
-    async def process_url_source(
-        self,
-        expected: str,
-        url: str,
-        *,
-        no_move_export_mode: str | None = None,
-    ) -> WorkflowOutcome:
-        suffix = self._suffix_from_name(url)
-        temp_path = self.make_temp_path("url_source", suffix)
-        extracted_path: Path | None = None
-        try:
-            downloaded_path, size, source = await download_from_url(
-                url,
-                str(temp_path),
-                max_bytes=self.config.yandex_max_mb * 1024 * 1024,
-            )
-            file_info = SourceFileInfo(
-                filename=Path(downloaded_path).name,
-                size=size,
-                source=source,
-                source_path=url,
-            )
-            prepared_path = await asyncio.to_thread(
-                maybe_extract_zip,
-                downloaded_path,
-                str(Path(downloaded_path).parent),
-            )
-            extracted_path = Path(prepared_path)
-            return await self._process_prepared_source(
-                expected,
-                extracted_path,
-                file_info,
-                no_move_export_mode=no_move_export_mode,
-            )
-        finally:
-            self._cleanup_temp_artifacts(temp_path)
-            if extracted_path is not None and extracted_path != temp_path:
-                self._cleanup_temp_artifacts(extracted_path)
 
     async def process_latest_yadisk_file(
         self,

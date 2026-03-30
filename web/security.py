@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import secrets
 import time
 from collections import defaultdict, deque
@@ -47,13 +48,48 @@ def validate_csrf_token(request: Request, token: str | None) -> None:
         )
 
 
+def _parse_bool_env(value: str | None) -> bool:
+    if value is None:
+        return False
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off", ""}:
+        return False
+    return False
+
+
+def _trust_proxy_headers_enabled(request: Request) -> bool:
+    """
+    Trust proxy headers only when explicitly enabled.
+
+    Prefer `request.app.state.runtime.config`, but fall back to env to keep
+    `client_ip()` unit-testable without an attached FastAPI app.
+    """
+    try:
+        app = request.app
+    except KeyError:
+        app = None
+
+    state = getattr(app, "state", None) if app is not None else None
+    runtime = getattr(state, "runtime", None) if state is not None else None
+    config = getattr(runtime, "config", None) if runtime is not None else None
+
+    flag = getattr(config, "web_trust_proxy_headers", None) if config is not None else None
+    if isinstance(flag, bool):
+        return flag
+    return _parse_bool_env(os.getenv("WEB_TRUST_PROXY_HEADERS"))
+
+
 def client_ip(request: Request) -> str:
-    real_ip = request.headers.get("x-real-ip", "").strip()
-    if real_ip:
-        return real_ip
-    forwarded_for = request.headers.get("x-forwarded-for", "")
-    if forwarded_for:
-        return forwarded_for.split(",")[0].strip()
+    if _trust_proxy_headers_enabled(request):
+        real_ip = request.headers.get("x-real-ip", "").strip()
+        if real_ip:
+            return real_ip
+        forwarded_for = request.headers.get("x-forwarded-for", "").strip()
+        if forwarded_for:
+            return forwarded_for.split(",")[0].strip()
+
     if request.client and request.client.host:
         return request.client.host
     return "unknown"

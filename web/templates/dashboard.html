@@ -1,20 +1,20 @@
 {% extends "base.html" %}
 
-{% block title %}Workspace | AnniLand{% endblock %}
+{% block title %}Рабочая зона | AnniLand{% endblock %}
 
 {% block content %}
 <section class="mx-auto max-w-7xl px-6 py-12">
     <div class="mb-8 flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
         <div>
-            <div class="text-sm uppercase tracking-[0.32em] text-fuchsia-200/80">Protected app</div>
+            <div class="text-sm uppercase tracking-[0.32em] text-fuchsia-200/80">Защищённое приложение</div>
             <h1 class="mt-3 text-4xl font-bold tracking-tight text-white">Рабочая зона web-дубля бота</h1>
             <p class="mt-3 max-w-3xl text-base leading-7 text-slate-300">
-                Все основные сценарии Telegram вынесены сюда: загрузки файлов, ссылки, Яндекс.Диск и обновление Google Sheets.
+                Все основные сценарии Telegram вынесены сюда: загрузка файлов, Яндекс.Диск и обновление Google Sheets.
             </p>
         </div>
         <div class="grid gap-3 sm:grid-cols-2">
             <a class="glass-pill" href="/app/help">Инструкция по Я.Диску</a>
-            <a class="glass-pill" href="/app/admin">Admin / logs</a>
+            <a class="glass-pill" href="/app/admin">Админ и логи</a>
         </div>
     </div>
 
@@ -28,42 +28,25 @@
                     </div>
                     <p class="panel-copy">Основной Excel с выбором типа выгрузки.</p>
                 </div>
-                <form class="grid gap-4 md:grid-cols-[1fr_auto]" hx-post="/app/actions/process" hx-target="#result-panel" hx-swap="innerHTML" enctype="multipart/form-data">
+                <form class="grid gap-4 md:grid-cols-[1fr_auto] md:items-stretch" hx-post="/app/actions/process"
+                    hx-target="#result-panel" hx-swap="innerHTML" enctype="multipart/form-data">
                     <input type="hidden" name="workflow" value="no_move">
-                    <input type="hidden" name="source_kind" value="file">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <div class="space-y-4">
-                        <select class="form-input" name="export_mode" required>
+                        <select class="form-input" name="export_mode" required aria-label="Тип выгрузки">
                             {% for label, value in no_move_modes %}
                             <option value="{{ value }}">{{ label }}</option>
                             {% endfor %}
                         </select>
-                        <input class="form-input file-input" type="file" name="upload" accept=".xlsx,.xls,.zip" required>
+                        <label class="block text-sm text-slate-400" for="upload-no-move-file">Файл (Excel или
+                            ZIP)</label>
+                        <input id="upload-no-move-file" class="form-input file-input" type="file" name="upload"
+                            accept=".xlsx,.xls,.zip" aria-label="Выберите файл Excel или архив ZIP">
                     </div>
-                    <button class="action-button" type="submit">Загрузить файл</button>
-                </form>
-                <form class="mt-4 grid gap-4 md:grid-cols-[1fr_auto_auto]" hx-post="/app/actions/process" hx-target="#result-panel" hx-swap="innerHTML">
-                    <input type="hidden" name="workflow" value="no_move">
-                    <input type="hidden" name="source_kind" value="url">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <select class="form-input" name="export_mode" required>
-                        {% for label, value in no_move_modes %}
-                        <option value="{{ value }}">{{ label }}</option>
-                        {% endfor %}
-                    </select>
-                    <input class="form-input" type="url" name="url" placeholder="https://..." required>
-                    <button class="action-button" type="submit">Обработать URL</button>
-                </form>
-                <form class="mt-4 flex flex-wrap gap-4" hx-post="/app/actions/process" hx-target="#result-panel" hx-swap="innerHTML">
-                    <input type="hidden" name="workflow" value="no_move">
-                    <input type="hidden" name="source_kind" value="yadisk_latest">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <select class="form-input min-w-[220px]" name="export_mode" required>
-                        {% for label, value in no_move_modes %}
-                        <option value="{{ value }}">{{ label }}</option>
-                        {% endfor %}
-                    </select>
-                    <button class="action-button" type="submit">Взять последний с Я.Диска</button>
+                    <div class="no-move-actions flex h-full min-h-0 w-full min-w-0 flex-col gap-3 self-stretch">
+                        <button class="action-button w-full" type="submit" name="source_kind" value="yadisk_latest">Взять последний с Я.Диска</button>
+                        <button class="action-button w-full" type="submit" name="source_kind" value="file">Загрузить файл</button>
+                    </div>
                 </form>
             </section>
 
@@ -75,24 +58,20 @@
                     </div>
                     <p class="panel-copy">Обновляет snapshot и правый блок таблицы.</p>
                 </div>
-                <div class="grid gap-4 lg:grid-cols-3">
-                    <form class="glass-subcard space-y-4" hx-post="/app/actions/process" hx-target="#result-panel" hx-swap="innerHTML" enctype="multipart/form-data">
+                <div class="grid gap-4 lg:grid-cols-2">
+                    <form class="glass-subcard space-y-4" hx-post="/app/actions/process" hx-target="#result-panel"
+                        hx-swap="innerHTML" enctype="multipart/form-data">
                         <input type="hidden" name="workflow" value="h24">
                         <input type="hidden" name="source_kind" value="file">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                         <div class="subcard-title">Файл</div>
-                        <input class="form-input file-input" type="file" name="upload" accept=".xlsx,.xls,.zip" required>
+                        <label class="block text-sm text-slate-400" for="upload-h24-file">Файл (Excel или ZIP)</label>
+                        <input id="upload-h24-file" class="form-input file-input" type="file" name="upload"
+                            accept=".xlsx,.xls,.zip" required aria-label="Выберите файл Excel или архив ZIP">
                         <button class="action-button w-full" type="submit">Загрузить</button>
                     </form>
-                    <form class="glass-subcard space-y-4" hx-post="/app/actions/process" hx-target="#result-panel" hx-swap="innerHTML">
-                        <input type="hidden" name="workflow" value="h24">
-                        <input type="hidden" name="source_kind" value="url">
-                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                        <div class="subcard-title">URL</div>
-                        <input class="form-input" type="url" name="url" placeholder="https://..." required>
-                        <button class="action-button w-full" type="submit">Скачать</button>
-                    </form>
-                    <form class="glass-subcard space-y-4" hx-post="/app/actions/process" hx-target="#result-panel" hx-swap="innerHTML">
+                    <form class="glass-subcard space-y-4" hx-post="/app/actions/process" hx-target="#result-panel"
+                        hx-swap="innerHTML">
                         <input type="hidden" name="workflow" value="h24">
                         <input type="hidden" name="source_kind" value="yadisk_latest">
                         <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
@@ -109,44 +88,27 @@
                         <div class="panel-label">03</div>
                         <h2 class="panel-title">Задержка склада</h2>
                     </div>
-                    <p class="panel-copy">Одиночный сводный файл или пакетная обработка целой папки.</p>
+                    <p class="panel-copy">Одиночный сводный файл с загрузкой или с Я.Диска.</p>
                 </div>
-                <div class="grid gap-4 xl:grid-cols-2">
-                    <div class="glass-subcard space-y-4">
-                        <div class="subcard-title">Один сводный файл</div>
-                        <form class="space-y-4" hx-post="/app/actions/process" hx-target="#result-panel" hx-swap="innerHTML" enctype="multipart/form-data">
-                            <input type="hidden" name="workflow" value="warehouse_delay_single">
-                            <input type="hidden" name="source_kind" value="file">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                            <input class="form-input file-input" type="file" name="upload" accept=".xlsx,.xls,.zip" required>
-                            <button class="action-button w-full" type="submit">Загрузить single-file</button>
-                        </form>
-                        <form class="grid gap-4 md:grid-cols-[1fr_auto]" hx-post="/app/actions/process" hx-target="#result-panel" hx-swap="innerHTML">
-                            <input type="hidden" name="workflow" value="warehouse_delay_single">
-                            <input type="hidden" name="source_kind" value="url">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                            <input class="form-input" type="url" name="url" placeholder="https://..." required>
-                            <button class="action-button" type="submit">URL</button>
-                        </form>
-                        <form hx-post="/app/actions/process" hx-target="#result-panel" hx-swap="innerHTML">
-                            <input type="hidden" name="workflow" value="warehouse_delay_single">
-                            <input type="hidden" name="source_kind" value="yadisk_latest">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                            <button class="action-button w-full" type="submit">Последний файл с Я.Диска</button>
-                        </form>
-                    </div>
-                    <div class="glass-subcard space-y-4">
-                        <div class="subcard-title">Несколько файлов из папки</div>
-                        <p class="text-sm leading-6 text-slate-400">
-                            Сценарий для пакетной сводной задержки склада. Сайт берёт все Excel и zip из директории на Я.Диске.
-                        </p>
-                        <form hx-post="/app/actions/process" hx-target="#result-panel" hx-swap="innerHTML">
-                            <input type="hidden" name="workflow" value="warehouse_delay_multiple">
-                            <input type="hidden" name="source_kind" value="yadisk_folder">
-                            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                            <button class="action-button w-full" type="submit">Запустить пакетную обработку</button>
-                        </form>
-                    </div>
+                <div class="glass-subcard space-y-4">
+                    <div class="subcard-title">Один сводный файл</div>
+                    <form class="space-y-4" hx-post="/app/actions/process" hx-target="#result-panel"
+                        hx-swap="innerHTML" enctype="multipart/form-data">
+                        <input type="hidden" name="workflow" value="warehouse_delay_single">
+                        <input type="hidden" name="source_kind" value="file">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <label class="block text-sm text-slate-400" for="upload-wh-delay-file">Файл (Excel или
+                            ZIP)</label>
+                        <input id="upload-wh-delay-file" class="form-input file-input" type="file" name="upload"
+                            accept=".xlsx,.xls,.zip" required aria-label="Выберите файл Excel или архив ZIP">
+                        <button class="action-button w-full" type="submit">Загрузить один сводный файл</button>
+                    </form>
+                    <form hx-post="/app/actions/process" hx-target="#result-panel" hx-swap="innerHTML">
+                        <input type="hidden" name="workflow" value="warehouse_delay_single">
+                        <input type="hidden" name="source_kind" value="yadisk_latest">
+                        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                        <button class="action-button w-full" type="submit">Последний файл с Я.Диска</button>
+                    </form>
                 </div>
             </section>
         </div>
@@ -155,19 +117,6 @@
             <div id="result-panel">
                 {% include "partials/result_panel.html" %}
             </div>
-            <section class="panel-card">
-                <div class="panel-header">
-                    <div>
-                        <div class="panel-label">04</div>
-                        <h2 class="panel-title">Дальше по развитию</h2>
-                    </div>
-                </div>
-                <ul class="space-y-3 text-sm leading-6 text-slate-300">
-                    <li>Публичную главную уже можно развить в personal landing.</li>
-                    <li>Рабочую часть легко расширить новыми внутренними инструментами.</li>
-                    <li>Стиль и layout уже готовы к переработке в сайт-карточку.</li>
-                </ul>
-            </section>
         </aside>
     </div>
 </section>

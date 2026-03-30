@@ -30,8 +30,12 @@ class Config:
     web_port: int = 8000
     web_rate_limit_per_minute: int = 20
     web_max_upload_mb: int = 20
+    # Trust proxy headers (x-real-ip / x-forwarded-for) only when explicitly enabled.
+    web_trust_proxy_headers: bool = False
     web_admin_username: str | None = None
     web_admin_password: str | None = None
+    web_user_username: str | None = None
+    web_user_password: str | None = None
 
 
 def _resolve_credentials_path(path_value: str, root_dir: Path) -> Path:
@@ -66,6 +70,22 @@ def parse_admin_user_ids(
         values.append(legacy_value)
 
     return tuple(values)
+
+
+def _parse_bool_env(value: str | None) -> bool:
+    """
+    Parse typical boolean env values.
+
+    Returns False for empty/unknown values to keep behaviour conservative.
+    """
+    if value is None:
+        return False
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "y", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "n", "off", ""}:
+        return False
+    return False
 
 
 def load_config(
@@ -128,8 +148,13 @@ def load_config(
     web_port = int(os.getenv("WEB_PORT") or 8000)
     web_rate_limit_per_minute = int(os.getenv("WEB_RATE_LIMIT_PER_MINUTE") or 20)
     web_max_upload_mb = int(os.getenv("WEB_MAX_UPLOAD_MB") or 20)
+    web_trust_proxy_headers = _parse_bool_env(
+        os.getenv("WEB_TRUST_PROXY_HEADERS")
+    )
     web_admin_username = os.getenv("WEB_ADMIN_USERNAME") or None
     web_admin_password = os.getenv("WEB_ADMIN_PASSWORD") or None
+    web_user_username = os.getenv("WEB_USER_USERNAME") or None
+    web_user_password = os.getenv("WEB_USER_PASSWORD") or None
 
     missing = []
     if require_telegram_token and not telegram_token:
@@ -144,6 +169,10 @@ def load_config(
         missing.append("WEB_ADMIN_USERNAME")
     if require_web_auth and not web_admin_password:
         missing.append("WEB_ADMIN_PASSWORD")
+    if require_web_auth and not web_user_username:
+        missing.append("WEB_USER_USERNAME")
+    if require_web_auth and not web_user_password:
+        missing.append("WEB_USER_PASSWORD")
 
     if missing:
         raise ValueError(
@@ -177,6 +206,9 @@ def load_config(
         web_port=web_port,
         web_rate_limit_per_minute=web_rate_limit_per_minute,
         web_max_upload_mb=web_max_upload_mb,
+        web_trust_proxy_headers=web_trust_proxy_headers,
         web_admin_username=web_admin_username,
         web_admin_password=web_admin_password,
+        web_user_username=web_user_username,
+        web_user_password=web_user_password,
     )

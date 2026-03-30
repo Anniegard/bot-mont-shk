@@ -19,15 +19,15 @@
                 <span class="flex h-10 w-10 items-center justify-center rounded-2xl bg-fuchsia-500/20 text-fuchsia-200 ring-1 ring-fuchsia-400/40">A</span>
                 <span>
                     <span class="block text-sm uppercase tracking-[0.35em] text-slate-400">AnniLand</span>
-                    <span class="block text-base">Bot Mirror</span>
+                    <span class="block text-base">Веб-дубль бота</span>
                 </span>
             </a>
             <nav class="flex items-center gap-3 text-sm text-slate-300">
                 <a class="nav-link" href="/">Главная</a>
                 {% if current_user %}
-                <a class="nav-link" href="/app">Workspace</a>
-                <a class="nav-link" href="/app/help">Help</a>
-                <a class="nav-link" href="/app/admin">Admin</a>
+                <a class="nav-link" href="/app">Рабочая зона</a>
+                <a class="nav-link" href="/app/help">Помощь</a>
+                <a class="nav-link" href="/app/admin">Админ и логи</a>
                 <form method="post" action="/logout" class="inline-flex">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button class="rounded-full border border-white/15 px-4 py-2 text-slate-200 transition hover:border-fuchsia-400/60 hover:text-white" type="submit">Выйти</button>

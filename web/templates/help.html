@@ -1,12 +1,12 @@
 {% extends "base.html" %}
 
-{% block title %}Help | AnniLand{% endblock %}
+{% block title %}Помощь | AnniLand{% endblock %}
 
 {% block content %}
 <section class="mx-auto max-w-5xl px-6 py-12">
     <div class="panel-card space-y-8">
         <div>
-            <div class="panel-label">Flow</div>
+            <div class="panel-label">Сценарий</div>
             <h1 class="mt-3 text-3xl font-bold text-white">Как работать с Яндекс.Диском и web-режимами</h1>
             <p class="mt-3 max-w-3xl text-base leading-7 text-slate-300">
                 Если файл тяжёлый или уже лежит на диске, web-версия умеет брать его напрямую из нужной папки.
@@ -27,20 +27,11 @@
             </div>
         </div>
         <ol class="space-y-3 text-sm leading-7 text-slate-300">
-            <li>1. Выберите режим в `Workspace`.</li>
-            <li>2. Используйте загрузку файла, прямой URL или кнопку последнего файла с Я.Диска.</li>
+            <li>1. Выберите режим в разделе «Рабочая зона».</li>
+            <li>2. Используйте загрузку файла или кнопку последнего файла с Я.Диска.</li>
             <li>3. Для `Задержка склада -> single` нужен единый сводный файл с колонкой `Блок`.</li>
-            <li>4. Для `multiple` сайт прочитает все подходящие Excel и zip в директории задержки склада.</li>
+            <li>4. Пакетная обработка всей папки на Я.Диске — из Telegram-бота, не из веб-интерфейса.</li>
         </ol>
     </div>
-</section>
-{% endblock %}
-{% extends "base.html" %}
-{% block content %}
-<section class="mx-auto w-full max-w-4xl rounded-3xl border border-white/10 bg-white/5 p-8 backdrop-blur">
-    <a href="/" class="text-sm text-sky-200 hover:text-sky-100">← Вернуться к рабочей зоне</a>
-    <h1 class="mt-4 text-3xl font-semibold">Помощь по Я.Диску</h1>
-    <p class="mt-2 text-slate-400">Краткая инструкция для сценариев, которые дублируют Telegram-бота.</p>
-    <pre class="mt-6 whitespace-pre-wrap rounded-2xl border border-white/10 bg-slate-950/70 p-6 font-sans text-sm text-slate-200">{{ help_text }}</pre>
 </section>
 {% endblock %}

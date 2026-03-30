@@ -143,6 +143,20 @@ header {
 .action-button:hover {
     transform: translateY(-1px);
 }
+
+/* Рабочая зона «Без движения»: колонка кнопок на всю высоту ячейки сетки */
+.no-move-actions {
+    align-self: stretch;
+    height: 100%;
+    min-height: 0;
+}
+
+.no-move-actions .action-button {
+    flex: 1 1 0;
+    min-height: 0;
+    height: 100%;
+    width: 100%;
+}
 .page-glow {
     position: fixed;
     inset: 0;

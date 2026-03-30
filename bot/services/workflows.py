@@ -3,22 +3,19 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import socket
 import time
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from html import escape
-from ipaddress import ip_address
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
-from urllib.parse import urlparse
 
 from bot.config import Config
 from bot.services.block_ids import load_block_ids
 from bot.services.excel import process_file
 from bot.services.excel_24h import build_24h_table, load_snapshot, process_24h_file, save_snapshot
-from bot.services.file_sources import download_from_url, maybe_extract_zip
+from bot.services.file_sources import maybe_extract_zip
 from bot.services.no_move_map import load_no_move_map, save_no_move_map
 from bot.services.sheets import update_tables, update_warehouse_delay_sheet
 from bot.services.warehouse_delay import aggregate_warehouse_delay_files, build_warehouse_delay_sheet_matrix, process_warehouse_delay_consolidated_file
@@ -33,7 +30,6 @@ EXPECTED_WAREHOUSE_DELAY_SINGLE = "warehouse_delay_single"
 EXPECTED_WAREHOUSE_DELAY_MULTIPLE = "warehouse_delay_multiple"
 
 MAX_TG_UPLOAD_BYTES = 20 * 1024 * 1024
-MAX_URL_BYTES = 200 * 1024 * 1024
 GLOBAL_LOCK_STALE_SECONDS = 6 * 60 * 60
 
 FlowKind = Literal[
@@ -50,10 +46,6 @@ class WorkflowError(Exception):
 
 class ProcessingBusyError(WorkflowError):
     """Raised when another task already owns the global processing slot."""
-
-
-class PublicUrlValidationError(WorkflowError):
-    """Raised when a user supplied URL is unsafe for server-side fetching."""
 
 
 @dataclass(frozen=True)
@@ -183,38 +175,6 @@ class ProcessingService:
                 )
         finally:
             self._cleanup_paths(cleanup_paths)
-
-    async def process_url_source(
-        self,
-        expected: str,
-        url: str,
-        *,
-        no_move_export_mode: str | None = None,
-    ) -> ProcessingOutcome:
-        await validate_public_http_url(url)
-        suffix = Path(urlparse(url).path).suffix or ".xlsx"
-        temp_path = self.make_temp_path("url", suffix)
-        try:
-            file_path, size, source_type = await download_from_url(
-                url,
-                str(temp_path),
-                max_bytes=MAX_URL_BYTES,
-            )
-            file_info = SourceFileInfo(
-                filename=Path(file_path).name,
-                size=size,
-                source=f"{source_type}_link",
-                source_path=url,
-                source_url=url,
-            )
-            return await self.process_local_source(
-                expected,
-                file_path,
-                file_info,
-                no_move_export_mode=no_move_export_mode,
-            )
-        finally:
-            self._cleanup_paths([temp_path])
 
     async def process_latest_yadisk_file(
         self,
@@ -608,38 +568,6 @@ class ProcessingService:
         from zoneinfo import ZoneInfo
 
         return datetime.now(ZoneInfo("Europe/Moscow")).date()
-
-
-async def validate_public_http_url(url: str) -> None:
-    parsed = urlparse(url.strip())
-    if parsed.scheme not in {"http", "https"}:
-        raise PublicUrlValidationError("Разрешены только http/https ссылки.")
-    if not parsed.hostname:
-        raise PublicUrlValidationError("Не удалось определить хост в ссылке.")
-
-    try:
-        resolved = await asyncio.get_running_loop().getaddrinfo(
-            parsed.hostname,
-            parsed.port or (443 if parsed.scheme == "https" else 80),
-            type=socket.SOCK_STREAM,
-        )
-    except socket.gaierror as exc:
-        raise PublicUrlValidationError("Не удалось разрешить адрес ссылки.") from exc
-
-    for _, _, _, _, sockaddr in resolved:
-        ip_text = sockaddr[0]
-        ip_value = ip_address(ip_text)
-        if (
-            ip_value.is_private
-            or ip_value.is_loopback
-            or ip_value.is_link_local
-            or ip_value.is_reserved
-            or ip_value.is_multicast
-            or ip_value.is_unspecified
-        ):
-            raise PublicUrlValidationError(
-                "Ссылка указывает на закрытый или локальный адрес и не может быть обработана."
-            )
 
 
 def _export_mode_label(export_mode: str) -> str:

@@ -70,7 +70,7 @@
         </div>
         {% endif %}
 
-        {% if flow.can_accept_file_or_url %}
+        {% if flow.can_accept_file %}
         <div class="mt-8 grid gap-4">
             <div class="rounded-2xl border border-white/10 bg-white/5 p-4">
                 <h3 class="text-lg font-medium">Шаг 2. Загрузить файл</h3>
@@ -90,18 +90,7 @@
             </div>
 
             <div class="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <h3 class="text-lg font-medium">Шаг 3. Или обработать по ссылке</h3>
-                <form hx-post="/actions/url" hx-target="#workspace-shell" hx-swap="outerHTML" class="mt-4 grid gap-3">
-                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-                    <input type="url" name="url" placeholder="https://..." class="rounded-xl border border-white/10 bg-slate-950/60 px-4 py-3 text-sm">
-                    <button type="submit" class="rounded-xl border border-sky-300/40 px-4 py-3 font-medium text-sky-100 transition hover:border-sky-200">
-                        Скачать и обработать
-                    </button>
-                </form>
-            </div>
-
-            <div class="rounded-2xl border border-white/10 bg-white/5 p-4">
-                <h3 class="text-lg font-medium">Шаг 4. Взять последний файл с Я.Диска</h3>
+                <h3 class="text-lg font-medium">Шаг 3. Взять последний файл с Я.Диска</h3>
                 <form hx-post="/actions/yadisk-latest" hx-target="#workspace-shell" hx-swap="outerHTML" class="mt-4">
                     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
                     <button type="submit" class="rounded-xl border border-fuchsia-300/40 px-4 py-3 font-medium text-fuchsia-100 transition hover:border-fuchsia-200">

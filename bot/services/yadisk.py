@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from urllib.parse import urlparse
 from typing import Dict, Tuple
 
 import logging
@@ -12,6 +13,26 @@ logger = logging.getLogger(__name__)
 
 class YaDiskError(Exception):
     pass
+
+
+_ALLOWED_YADISK_DOWNLOAD_HOSTS = ("yandex.net", "yandex.ru")
+
+
+def _is_allowed_yadisk_download_href(href: str) -> bool:
+    """
+    Defense-in-depth for redirect/SSRF: allow only HTTPS URLs
+    pointing to yandex.net / yandex.ru (including subdomains).
+    """
+    parsed = urlparse(href)
+    if parsed.scheme != "https":
+        return False
+    host = (parsed.hostname or "").lower()
+    if not host:
+        return False
+    for base_host in _ALLOWED_YADISK_DOWNLOAD_HOSTS:
+        if host == base_host or host.endswith("." + base_host):
+            return True
+    return False
 
 
 def _auth_headers(token: str) -> Dict[str, str]:
@@ -170,7 +191,13 @@ async def yadisk_download_file(
             await _raise_for_status(resp)
             data = await resp.json()
         href = data.get("href")
-        if not href:
+        if not isinstance(href, str) or not href.strip():
             raise YaDiskError("Не удалось получить ссылку для скачивания файла.")
+        href = href.strip()
+        if not _is_allowed_yadisk_download_href(href):
+            raise YaDiskError(
+                "Недопустимая ссылка для скачивания Я.Диска. Ожидается HTTPS на хостах "
+                "yandex.net/yandex.ru (включая поддомены)."
+            )
         size = await _download_stream(session, href, Path(dest_path), max_bytes)
     return {"path": dest_path, "size": size}

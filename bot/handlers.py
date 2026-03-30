@@ -27,7 +27,6 @@ from bot.services.excel import (
     EXPORT_WITH_TRANSFERS,
     EXPORT_WITHOUT_TRANSFERS,
 )
-from bot.services.file_sources import is_url
 from bot.services.processing import (
     ProcessingBusyError,
     ProcessingService,
@@ -80,9 +79,6 @@ WAREHOUSE_DELAY_MODE_BUTTONS = {
 }
 
 MAX_TG_UPLOAD_BYTES = 20 * 1024 * 1024
-MAX_URL_BYTES = 200 * 1024 * 1024
-
-
 class BotHandlers:
     def __init__(self, config: Config, gspread_client):
         self.config = config
@@ -120,12 +116,8 @@ class BotHandlers:
         )
 
         logger.debug(
-            "YANDEX token prefix: %s; dirs: no_move=%s h24=%s warehouse_delay=%s",
-            (
-                (self.config.yandex_oauth_token[:8] + "***")
-                if self.config.yandex_oauth_token
-                else "none"
-            ),
+            "Yandex OAuth: %s; dirs: no_move=%s h24=%s warehouse_delay=%s",
+            "configured" if self.config.yandex_oauth_token else "none",
             self.config.yandex_no_move_dir,
             self.config.yandex_24h_dir,
             self.config.yandex_warehouse_delay_dir,
@@ -188,7 +180,7 @@ class BotHandlers:
             "• 📦 Без движения — основной файл с гофрой/идентификаторами.\n"
             "• ⏱ 24 часа — файл прогноза списаний, обновляет правую таблицу.\n"
             "• 📦 Задержка склада (сводная) — умеет обработать один сводный файл или все файлы из папки Я.Диска.\n"
-            "Выберите режим кнопкой снизу и пришлите файл (.xlsx) до 20 МБ или ссылку на файл (Яндекс.Диск/прямая).\n"
+            "Выберите режим кнопкой снизу и пришлите файл (.xlsx до 20 МБ) или заберите последний файл с Я.Диска кнопкой ниже.\n"
             "Между строками выгрузки будет пустая строка для удобного CTRL+A."
         )
         logger.info("Команда /start user_id=%s username=%s", user.id, user.username)
@@ -301,7 +293,7 @@ class BotHandlers:
         user = update.effective_user
         logger.info("Выбран режим 24ч user_id=%s username=%s", user.id, user.username)
         await update.message.reply_text(
-            "Ок, пришли Excel «24 часа» (документ до 20 МБ) или ссылку на файл.",
+            "Ок, пришли Excel «24 часа» (документ до 20 МБ) или нажми «☁️ Взять с Я.Диска».",
             reply_markup=self.reply_keyboard,
         )
 
@@ -357,7 +349,7 @@ class BotHandlers:
         if selected_mode == EXPECTED_WAREHOUSE_DELAY_SINGLE:
             context.user_data["expected_upload"] = EXPECTED_WAREHOUSE_DELAY_SINGLE
             await query.message.reply_text(
-                "Пришлите один Excel-файл, прямую ссылку на него или нажмите «☁️ Взять с Я.Диска (последний файл)».\n"
+                "Пришлите один Excel-файл или нажмите «☁️ Взять с Я.Диска (последний файл)».\n"
                 "Для этого режима нужен единый сводный файл с колонкой «Блок».",
                 reply_markup=self.reply_keyboard,
             )
@@ -455,7 +447,7 @@ class BotHandlers:
             pass
 
         await query.message.reply_text(
-            f"Режим выбран: {label.lower()}. Пришлите Excel или ссылку.",
+            f"Режим выбран: {label.lower()}. Пришлите Excel-файл или используйте Я.Диск.",
             reply_markup=self.reply_keyboard,
         )
 
@@ -561,24 +553,9 @@ class BotHandlers:
             await status_message.edit_text("Не удалось получить файл с Я.Диска.")
 
     async def handle_text(self, update: Update, context: CallbackContext) -> None:
-        text = (update.message.text or "").strip()
-        if is_url(text):
-            expected = context.user_data.get("expected_upload")
-            if not expected:
-                await update.message.reply_text(
-                    "Сначала выберите режим кнопкой снизу, затем пришлите ссылку.",
-                    reply_markup=self.reply_keyboard,
-                )
-                return
-            if expected == EXPECTED_NO_MOVE:
-                export_mode = await self._ensure_no_move_mode_selected(update, context)
-                if not export_mode:
-                    return
-            await self._process_url_file(update, context, text, expected)
-            return
-
         await update.message.reply_text(
-            "Выберите режим кнопкой снизу и пришлите Excel (.xlsx до 20 МБ) или ссылку на файл. Для «Задержка склада (сводная)» сначала выберите подрежим.",
+            "Выберите режим кнопкой снизу и пришлите Excel как документ (до 20 МБ) "
+            "или воспользуйтесь «☁️ Взять с Я.Диска». Загрузка по ссылке отключена.",
             reply_markup=self.reply_keyboard,
         )
 
@@ -676,31 +653,6 @@ class BotHandlers:
                 "Ошибка при загрузке файла. Попробуйте еще раз."
             )
 
-    async def _process_url_file(
-        self, update: Update, context: CallbackContext, url: str, expected: str
-    ) -> None:
-        user = update.effective_user
-        status_message = await update.message.reply_text("Скачиваю файл по ссылке...")
-        try:
-            async with self.processing_service.processing_slot():
-                outcome = await self.processing_service.process_url_source(
-                    expected,
-                    url,
-                    no_move_export_mode=context.user_data.get(NO_MOVE_EXPORT_KEY),
-                )
-            context.user_data["expected_upload"] = None
-            await self._edit_status_with_outcome(status_message, outcome)
-        except (ProcessingBusyError, WorkflowError, YaDiskError) as exc:
-            logger.warning(
-                "Ошибка скачивания по ссылке user_id=%s url=%s: %s", user.id, url, exc
-            )
-            await status_message.edit_text(str(exc))
-        except Exception:
-            logger.exception(
-                "Ошибка скачивания по ссылке user_id=%s url=%s", user.id, url
-            )
-            await status_message.edit_text("Не удалось скачать файл по ссылке.")
-
     async def admin_button_handler(
         self, update: Update, context: CallbackContext
     ) -> None:
@@ -747,13 +699,10 @@ class BotHandlers:
 
     async def send_big_file_instructions(self, update: Update) -> None:
         text = (
-            "Файл слишком большой для скачивания через Telegram или недоступен.\n"
-            "Как отправить ссылку (Яндекс.Диск):\n"
-            "1) Загрузите файл на Яндекс.Диск\n"
-            "2) Нажмите «Поделиться» и включите доступ по ссылке\n"
-            "3) Скопируйте ссылку вида https://disk.yandex.ru/d/...\n"
-            "4) Пришлите эту ссылку сюда (после выбора режима 📦 или ⏱).\n"
-            "Бот скачает файл по ссылке и обработает."
+            "Файл слишком большой для скачивания через Telegram (лимит 20 МБ) или недоступен.\n"
+            "Загрузите файл в нужную папку на Яндекс.Диске "
+            "(см. «📎 Инструкция по загрузке на Диск»), затем после выбора режима "
+            "нажмите «☁️ Взять с Я.Диска (последний файл)»."
         )
         await update.message.reply_text(text, reply_markup=self.reply_keyboard)
 

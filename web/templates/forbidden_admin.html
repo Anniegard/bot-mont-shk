@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+
+{% block title %}Нет прав | AnniLand{% endblock %}
+
+{% block content %}
+<section class="mx-auto flex min-h-[calc(100vh-88px)] max-w-7xl items-center px-6 py-16">
+    <div class="w-full max-w-xl rounded-[2rem] border border-amber-400/20 bg-amber-500/10 p-8 shadow-xl backdrop-blur">
+        <div class="text-sm uppercase tracking-[0.35em] text-amber-200/80">Доступ ограничен</div>
+        <h1 class="mt-4 text-2xl font-bold tracking-tight text-white">Нет прав администратора</h1>
+        <p class="mt-4 text-base leading-7 text-slate-300">
+            Раздел «Админ и логи» доступен только администратору. Вернитесь в рабочую зону для обработки файлов.
+        </p>
+        <a class="mt-8 inline-flex rounded-full border border-white/15 px-5 py-3 font-semibold text-slate-100 transition hover:border-fuchsia-400/60 hover:text-white" href="/app">В рабочую зону</a>
+    </div>
+</section>
+{% endblock %}

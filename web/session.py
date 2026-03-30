@@ -43,7 +43,7 @@ class FlowState:
         return None
 
     @property
-    def can_accept_file_or_url(self) -> bool:
+    def can_accept_file(self) -> bool:
         return self.active_processing_mode in {
             EXPECTED_NO_MOVE,
             EXPECTED_24H,

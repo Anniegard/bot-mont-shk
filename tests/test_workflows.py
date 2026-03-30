@@ -1,17 +1,11 @@
 from __future__ import annotations
 
-import asyncio
 from pathlib import Path
 
 import pytest
 
 from bot.config import Config
-from bot.services.workflows import (
-    ProcessingBusyError,
-    ProcessingService,
-    PublicUrlValidationError,
-    validate_public_http_url,
-)
+from bot.services.workflows import ProcessingBusyError, ProcessingService
 
 
 def make_config(tmp_path: Path) -> Config:
@@ -39,8 +33,3 @@ def test_processing_lock_rejects_parallel_work(tmp_path: Path) -> None:
             service._acquire_global_lock()
     finally:
         release()
-
-
-def test_validate_public_http_url_rejects_loopback() -> None:
-    with pytest.raises(PublicUrlValidationError):
-        asyncio.run(validate_public_http_url("http://127.0.0.1/file.xlsx"))
