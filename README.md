@@ -22,6 +22,7 @@
     - «Из нескольких файлов» — читает все Excel/zip из `YANDEX_WAREHOUSE_DELAY_DIR`.
   - ☁️ Взять с Я.Диска (последний файл) — скачать последний файл из папок Я.Диска по OAuth.
   - 📎 Инструкция по загрузке на Диск.
+  - 🤖 AI-ассистент — только для администраторов; отвечает на вопросы по последнему файлу «Без движения» из `YANDEX_NO_MOVE_DIR` через локальный Ollama.
   - 🛠 Админ-панель (только для администраторов из `BOT_ADMIN_IDS` или `ADMIN_USER_ID`).
 - Runtime raw DB features сейчас отключены: review/search команды для `raw_yadisk_rows` и кейсов не зарегистрированы в боте.
 - Приём входных данных: документ в Telegram до 20 МБ, Яндекс.Диск (OAuth), zip с Excel внутри.
@@ -101,6 +102,14 @@ python main_web.py
   - `YANDEX_ALLOWED_EXTS` — по умолчанию `.xlsx,.xls,.zip`.
   - `YANDEX_MAX_MB` — лимит скачивания по OAuth (по умолчанию 200).
 - `WAREHOUSE_DELAY_WORKSHEET_NAME` — имя отдельного worksheet для сводной задержки склада.
+- Локальный AI-ассистент:
+  - `OLLAMA_BASE_URL` — URL локального Ollama, по умолчанию `http://127.0.0.1:11434`.
+  - `OLLAMA_MODEL` — имя локальной модели в Ollama, например `llama3.1:8b`.
+  - `OLLAMA_TIMEOUT_SECONDS` — таймаут ответа Ollama.
+  - `AI_ASSISTANT_MAX_HISTORY_MESSAGES` — сколько последних сообщений диалога хранить в AI-сессии.
+  - `AI_ASSISTANT_MAX_CONTEXT_ROWS` — лимит строк Excel, отправляемых модели.
+  - `AI_ASSISTANT_MAX_CONTEXT_CHARS` — лимит размера контекста для модели.
+  - `AI_ASSISTANT_MAX_REPLY_CHARS` — лимит длины ответа в Telegram.
 - Веб-сайт:
   - `PUBLIC_BASE_URL` — внешний URL сайта, например `https://AnniLand.ru`.
   - `WEB_SECRET_KEY` — секрет для cookie-сессий. Обязателен для веба.
@@ -125,7 +134,8 @@ python main_web.py
      - «Из нескольких файлов» — бот сам скачает все файлы из `YANDEX_WAREHOUSE_DELAY_DIR` и обновит отдельный worksheet.
 3. «📎 Инструкция…» — напоминает, куда класть файлы на Я.Диск.
 4. Админ-панель — только для администраторов из `BOT_ADMIN_IDS` или `ADMIN_USER_ID`.
-5. Runtime raw DB review/search команды сейчас отключены и в Telegram не зарегистрированы.
+5. `🤖 AI-ассистент` — только для администратора. Бот сам берёт последний файл из `YANDEX_NO_MOVE_DIR`, читает Excel и отвечает на вопросы через локальный Ollama. Выход из режима: выбрать другую рабочую кнопку или выполнить `/start`.
+6. Runtime raw DB review/search команды сейчас отключены и в Telegram не зарегистрированы.
 
 ## Яндекс.Диск (OAuth, без публичных ссылок)
 - Создайте папки `disk:/BOT_UPLOADS/no_move/`, `disk:/BOT_UPLOADS/24h/` и `disk:/BOT_UPLOADS/warehouse_delay/`.
@@ -169,10 +179,11 @@ pytest
   - warehouse delay: нормализация имени файла, mapping в canonical row name, bucketization, фильтр `без задания`, total row, пропуск непонятного файла, формирование Google Sheets matrix.
   - warehouse delay single-file: группировка по колонке `Блок`, top-10 тар без задания, dedupe по таре, пропуск невалидного времени.
   - web: login, protected dashboard, запуск обработки через форму, web-only config runtime.
+  - AI-ассистент: конфиг Ollama, admin-only keyboard, маршрутизация AI-сессии и мокнутый happy-path без живого Ollama/Я.Диска.
 - Сознательно не покрыто на этом этапе:
   - живые интеграции с Google Sheets и Yandex Disk;
   - end-to-end обработка реальных Excel-файлов;
-  - Telegram handlers и сценарии с `.env`/секретами.
+  - полный end-to-end Telegram-сценарий с реальным Ollama и реальными секретами из `.env`.
 
 ## Примечания
 - Пустые/невалидные прогнозы 24ч исключаются; группы без корректного прогноза не выводятся.

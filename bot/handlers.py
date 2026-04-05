@@ -22,11 +22,13 @@ from telegram.ext import (
 )
 
 from bot.config import Config
+from bot.services.ai_assistant import AIAssistantError, AIAssistantService
 from bot.services.excel import (
     EXPORT_ONLY_TRANSFERS,
     EXPORT_WITH_TRANSFERS,
     EXPORT_WITHOUT_TRANSFERS,
 )
+from bot.services.ollama_client import OllamaError
 from bot.services.processing import (
     ProcessingBusyError,
     ProcessingService,
@@ -42,6 +44,7 @@ logger = logging.getLogger(__name__)
 BUTTON_NO_MOVE = "📦 Без движения"
 BUTTON_24H = "⏱ 24 часа (обновить)"
 BUTTON_WAREHOUSE_DELAY = "📦 Задержка склада (сводная)"
+BUTTON_AI_ASSISTANT = "🤖 AI-ассистент"
 BUTTON_ADMIN = "🛠 Админ-панель"
 BUTTON_YA_LAST = "☁️ Взять с Я.Диска (последний файл)"
 BUTTON_YA_HELP = "📎 Инструкция по загрузке на Диск"
@@ -51,6 +54,8 @@ EXPECTED_24H = "24h"
 EXPECTED_WAREHOUSE_DELAY_SINGLE = "warehouse_delay_single"
 WAREHOUSE_DELAY_MODE_KEY = "warehouse_delay_mode"
 NO_MOVE_EXPORT_KEY = "no_move_export_mode"
+AI_SESSION_ACTIVE_KEY = "ai_assistant_active"
+AI_SESSION_HISTORY_KEY = "ai_assistant_history"
 
 NO_MOVE_EXPORT_CALLBACK_PREFIX = "no_move_mode:"
 NO_MOVE_EXPORT_BUTTONS = {
@@ -102,6 +107,10 @@ class BotHandlers:
             no_move_map_path=self.no_move_map_path,
         )
         self.processing_lock = self.processing_service.lock
+        self.ai_assistant_service = AIAssistantService(
+            config=config,
+            processing_service=self.processing_service,
+        )
 
         self.reply_keyboard = ReplyKeyboardMarkup(
             [
@@ -110,6 +119,18 @@ class BotHandlers:
                 [BUTTON_WAREHOUSE_DELAY],
                 [BUTTON_YA_LAST],
                 [BUTTON_YA_HELP],
+                [BUTTON_ADMIN],
+            ],
+            resize_keyboard=True,
+        )
+        self.admin_reply_keyboard = ReplyKeyboardMarkup(
+            [
+                [BUTTON_NO_MOVE],
+                [BUTTON_24H],
+                [BUTTON_WAREHOUSE_DELAY],
+                [BUTTON_YA_LAST],
+                [BUTTON_YA_HELP],
+                [BUTTON_AI_ASSISTANT],
                 [BUTTON_ADMIN],
             ],
             resize_keyboard=True,
@@ -152,6 +173,12 @@ class BotHandlers:
             )
         )
         application.add_handler(
+            MessageHandler(
+                filters.Regex(f"^{re.escape(BUTTON_AI_ASSISTANT)}$"),
+                self.enter_ai_assistant,
+            )
+        )
+        application.add_handler(
             MessageHandler(filters.Regex(f"^{re.escape(BUTTON_ADMIN)}$"), self.admin)
         )
         application.add_handler(MessageHandler(filters.Document.ALL, self.handle_file))
@@ -175,6 +202,7 @@ class BotHandlers:
         user = update.effective_user
         context.user_data["expected_upload"] = None
         context.user_data[WAREHOUSE_DELAY_MODE_KEY] = None
+        self._reset_ai_session(context)
         message = (
             "Привет! Я могу обработать Excel:\n"
             "• 📦 Без движения — основной файл с гофрой/идентификаторами.\n"
@@ -183,8 +211,16 @@ class BotHandlers:
             "Выберите режим кнопкой снизу и пришлите файл (.xlsx до 20 МБ) или заберите последний файл с Я.Диска кнопкой ниже.\n"
             "Между строками выгрузки будет пустая строка для удобного CTRL+A."
         )
+        if user and self._is_admin(user.id):
+            message += (
+                "\n• 🤖 AI-ассистент — вопросы по последнему файлу "
+                "«Без движения» из папки Я.Диска."
+            )
         logger.info("Команда /start user_id=%s username=%s", user.id, user.username)
-        await update.message.reply_text(message, reply_markup=self.reply_keyboard)
+        await update.message.reply_text(
+            message,
+            reply_markup=self._reply_keyboard_for_user(user.id if user else None),
+        )
 
     async def admin(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/admin"):
@@ -202,6 +238,34 @@ class BotHandlers:
         await update.message.reply_text(
             "Выберите действие.",
             reply_markup=InlineKeyboardMarkup(admin_keyboard),
+        )
+
+    async def enter_ai_assistant(
+        self, update: Update, context: CallbackContext
+    ) -> None:
+        if not await self._ensure_admin_access(update, command_name=BUTTON_AI_ASSISTANT):
+            return
+
+        self._reset_ai_session(context)
+        context.user_data["expected_upload"] = None
+        context.user_data[NO_MOVE_EXPORT_KEY] = None
+        context.user_data[WAREHOUSE_DELAY_MODE_KEY] = None
+
+        try:
+            self.ai_assistant_service.ensure_configured()
+        except (AIAssistantError, OllamaError) as exc:
+            await update.message.reply_text(
+                str(exc),
+                reply_markup=self._reply_keyboard_for_user(update.effective_user.id),
+            )
+            return
+
+        context.user_data[AI_SESSION_ACTIVE_KEY] = True
+        await update.message.reply_text(
+            "Режим AI-ассистента включён.\n"
+            "Пишите вопросы по последнему файлу «Без движения» из папки Я.Диска.\n"
+            "Для выхода нажмите другую рабочую кнопку или выполните /start.",
+            reply_markup=self._reply_keyboard_for_user(update.effective_user.id),
         )
 
     async def _reply_runtime_db_features_disabled(
@@ -275,6 +339,7 @@ class BotHandlers:
         await self._reply_runtime_db_features_disabled(update, "/raw_pending")
 
     async def select_no_move(self, update: Update, context: CallbackContext) -> None:
+        self._reset_ai_session(context)
         context.user_data["expected_upload"] = EXPECTED_NO_MOVE
         context.user_data[NO_MOVE_EXPORT_KEY] = None
         context.user_data[WAREHOUSE_DELAY_MODE_KEY] = None
@@ -288,18 +353,20 @@ class BotHandlers:
         )
 
     async def select_24h(self, update: Update, context: CallbackContext) -> None:
+        self._reset_ai_session(context)
         context.user_data["expected_upload"] = EXPECTED_24H
         context.user_data[WAREHOUSE_DELAY_MODE_KEY] = None
         user = update.effective_user
         logger.info("Выбран режим 24ч user_id=%s username=%s", user.id, user.username)
         await update.message.reply_text(
             "Ок, пришли Excel «24 часа» (документ до 20 МБ) или нажми «☁️ Взять с Я.Диска».",
-            reply_markup=self.reply_keyboard,
+            reply_markup=self._reply_keyboard_for_user(user.id if user else None),
         )
 
     async def handle_warehouse_delay_summary(
         self, update: Update, context: CallbackContext
     ) -> None:
+        self._reset_ai_session(context)
         context.user_data["expected_upload"] = None
         context.user_data[WAREHOUSE_DELAY_MODE_KEY] = None
         await update.message.reply_text(
@@ -351,7 +418,7 @@ class BotHandlers:
             await query.message.reply_text(
                 "Пришлите один Excel-файл или нажмите «☁️ Взять с Я.Диска (последний файл)».\n"
                 "Для этого режима нужен единый сводный файл с колонкой «Блок».",
-                reply_markup=self.reply_keyboard,
+                reply_markup=self._reply_keyboard_for_user(user.id if user else None),
             )
             return
 
@@ -448,7 +515,7 @@ class BotHandlers:
 
         await query.message.reply_text(
             f"Режим выбран: {label.lower()}. Пришлите Excel-файл или используйте Я.Диск.",
-            reply_markup=self.reply_keyboard,
+            reply_markup=self._reply_keyboard_for_user(user.id if user else None),
         )
 
     async def _ensure_no_move_mode_selected(
@@ -503,17 +570,29 @@ class BotHandlers:
         self, update: Update, context: CallbackContext
     ) -> None:
         text = self.processing_service.build_yadisk_help_text()
-        await update.message.reply_text(text, reply_markup=self.reply_keyboard)
+        user = update.effective_user
+        await update.message.reply_text(
+            text,
+            reply_markup=self._reply_keyboard_for_user(user.id if user else None),
+        )
 
     async def handle_yadisk_latest(
         self, update: Update, context: CallbackContext
     ) -> None:
         user = update.effective_user
+        if context.user_data.get(AI_SESSION_ACTIVE_KEY):
+            await update.message.reply_text(
+                "В AI-режиме отдельно нажимать Я.Диск не нужно. "
+                "Просто задайте вопрос, и бот сам возьмёт последний файл "
+                "«Без движения».",
+                reply_markup=self._reply_keyboard_for_user(user.id if user else None),
+            )
+            return
         expected = context.user_data.get("expected_upload")
         if not expected:
             await update.message.reply_text(
                 "Сначала выберите режим: 📦 Без движения, ⏱ 24 часа или «📦 Задержка склада (сводная) → Из одного файла».",
-                reply_markup=self.reply_keyboard,
+                reply_markup=self._reply_keyboard_for_user(user.id if user else None),
             )
             return
 
@@ -553,21 +632,98 @@ class BotHandlers:
             await status_message.edit_text("Не удалось получить файл с Я.Диска.")
 
     async def handle_text(self, update: Update, context: CallbackContext) -> None:
+        if context.user_data.get(AI_SESSION_ACTIVE_KEY):
+            await self.handle_ai_question(update, context)
+            return
+        user = update.effective_user
         await update.message.reply_text(
             "Выберите режим кнопкой снизу и пришлите Excel как документ (до 20 МБ) "
             "или воспользуйтесь «☁️ Взять с Я.Диска». Загрузка по ссылке отключена.",
-            reply_markup=self.reply_keyboard,
+            reply_markup=self._reply_keyboard_for_user(user.id if user else None),
         )
+
+    async def handle_ai_question(
+        self, update: Update, context: CallbackContext
+    ) -> None:
+        user = update.effective_user
+        if not user or not self._is_admin(user.id):
+            self._reset_ai_session(context)
+            await update.message.reply_text("У вас нет прав для AI-ассистента.")
+            return
+
+        question = (update.message.text or "").strip()
+        if not question:
+            await update.message.reply_text(
+                "Напишите вопрос по последнему файлу «Без движения».",
+                reply_markup=self._reply_keyboard_for_user(user.id),
+            )
+            return
+
+        history = context.user_data.get(AI_SESSION_HISTORY_KEY) or []
+        status_message = await update.message.reply_text(
+            "Смотрю последний файл «Без движения» и готовлю ответ..."
+        )
+        try:
+            response = await self.ai_assistant_service.answer_question(
+                question=question,
+                history=history,
+            )
+            context.user_data[AI_SESSION_HISTORY_KEY] = (
+                self.ai_assistant_service.trim_history(
+                    [
+                        *history,
+                        {"role": "user", "content": question},
+                        {"role": "assistant", "content": response.text},
+                    ]
+                )
+            )
+            logger.info(
+                "AI assistant answered user_id=%s username=%s source=%s matched_rows=%s",
+                user.id,
+                user.username,
+                response.source_name,
+                response.matched_rows,
+            )
+            await status_message.edit_text(response.text)
+        except (
+            ProcessingBusyError,
+            AIAssistantError,
+            OllamaError,
+            YaDiskError,
+        ) as exc:
+            logger.warning(
+                "AI assistant warning user_id=%s username=%s: %s",
+                user.id,
+                user.username,
+                exc,
+            )
+            await status_message.edit_text(str(exc))
+        except Exception:
+            logger.exception(
+                "AI assistant failed user_id=%s username=%s",
+                user.id,
+                user.username,
+            )
+            await status_message.edit_text(
+                "Не удалось получить ответ AI-ассистента. Подробности в логах."
+            )
 
     async def handle_file(self, update: Update, context: CallbackContext) -> None:
         user = update.effective_user
         document = update.message.document
+        if context.user_data.get(AI_SESSION_ACTIVE_KEY):
+            await update.message.reply_text(
+                "В режиме AI-ассистента файл загружать не нужно. "
+                "Просто напишите вопрос по последнему файлу «Без движения».",
+                reply_markup=self._reply_keyboard_for_user(user.id if user else None),
+            )
+            return
         expected = context.user_data.get("expected_upload")
 
         if not expected:
             await update.message.reply_text(
                 "Сначала выберите режим: 📦 Без движения, ⏱ 24 часа или «📦 Задержка склада (сводная) → Из одного файла».",
-                reply_markup=self.reply_keyboard,
+                reply_markup=self._reply_keyboard_for_user(user.id if user else None),
             )
             return
 
@@ -683,7 +839,7 @@ class BotHandlers:
                 return
             await query.message.reply_text(
                 "Выберите режим кнопкой снизу и отправьте файл.",
-                reply_markup=self.reply_keyboard,
+                reply_markup=self._reply_keyboard_for_user(user.id),
             )
             return
 
@@ -704,7 +860,11 @@ class BotHandlers:
             "(см. «📎 Инструкция по загрузке на Диск»), затем после выбора режима "
             "нажмите «☁️ Взять с Я.Диска (последний файл)»."
         )
-        await update.message.reply_text(text, reply_markup=self.reply_keyboard)
+        user = update.effective_user
+        await update.message.reply_text(
+            text,
+            reply_markup=self._reply_keyboard_for_user(user.id if user else None),
+        )
 
     async def _send_logs(self, query) -> None:
         log_path = Path(__file__).resolve().parent.parent / "logs" / "bot.log"
@@ -965,3 +1125,12 @@ class BotHandlers:
 
     def _is_admin(self, user_id: int) -> bool:
         return str(user_id) in self.config.admin_user_ids
+
+    def _reply_keyboard_for_user(self, user_id: int | None) -> ReplyKeyboardMarkup:
+        if user_id is not None and self._is_admin(user_id):
+            return self.admin_reply_keyboard
+        return self.reply_keyboard
+
+    def _reset_ai_session(self, context: CallbackContext) -> None:
+        context.user_data[AI_SESSION_ACTIVE_KEY] = False
+        context.user_data[AI_SESSION_HISTORY_KEY] = []

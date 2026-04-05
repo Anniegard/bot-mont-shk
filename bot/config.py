@@ -36,6 +36,13 @@ class Config:
     web_admin_password: str | None = None
     web_user_username: str | None = None
     web_user_password: str | None = None
+    ollama_base_url: str = "http://127.0.0.1:11434"
+    ollama_model: str | None = None
+    ollama_timeout_seconds: int = 60
+    ai_assistant_max_history_messages: int = 8
+    ai_assistant_max_context_rows: int = 80
+    ai_assistant_max_context_chars: int = 12000
+    ai_assistant_max_reply_chars: int = 3500
 
 
 def _resolve_credentials_path(path_value: str, root_dir: Path) -> Path:
@@ -86,6 +93,20 @@ def _parse_bool_env(value: str | None) -> bool:
     if normalized in {"0", "false", "no", "n", "off", ""}:
         return False
     return False
+
+
+def _clamp_int_env(
+    value: str | None,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        parsed = int(value or default)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(parsed, maximum))
 
 
 def load_config(
@@ -155,6 +176,38 @@ def load_config(
     web_admin_password = os.getenv("WEB_ADMIN_PASSWORD") or None
     web_user_username = os.getenv("WEB_USER_USERNAME") or None
     web_user_password = os.getenv("WEB_USER_PASSWORD") or None
+    ollama_base_url = os.getenv("OLLAMA_BASE_URL") or "http://127.0.0.1:11434"
+    ollama_model = os.getenv("OLLAMA_MODEL") or None
+    ollama_timeout_seconds = _clamp_int_env(
+        os.getenv("OLLAMA_TIMEOUT_SECONDS"),
+        default=60,
+        minimum=5,
+        maximum=300,
+    )
+    ai_assistant_max_history_messages = _clamp_int_env(
+        os.getenv("AI_ASSISTANT_MAX_HISTORY_MESSAGES"),
+        default=8,
+        minimum=0,
+        maximum=20,
+    )
+    ai_assistant_max_context_rows = _clamp_int_env(
+        os.getenv("AI_ASSISTANT_MAX_CONTEXT_ROWS"),
+        default=80,
+        minimum=10,
+        maximum=200,
+    )
+    ai_assistant_max_context_chars = _clamp_int_env(
+        os.getenv("AI_ASSISTANT_MAX_CONTEXT_CHARS"),
+        default=12000,
+        minimum=2000,
+        maximum=30000,
+    )
+    ai_assistant_max_reply_chars = _clamp_int_env(
+        os.getenv("AI_ASSISTANT_MAX_REPLY_CHARS"),
+        default=3500,
+        minimum=500,
+        maximum=4000,
+    )
 
     missing = []
     if require_telegram_token and not telegram_token:
@@ -211,4 +264,11 @@ def load_config(
         web_admin_password=web_admin_password,
         web_user_username=web_user_username,
         web_user_password=web_user_password,
+        ollama_base_url=ollama_base_url,
+        ollama_model=ollama_model,
+        ollama_timeout_seconds=ollama_timeout_seconds,
+        ai_assistant_max_history_messages=ai_assistant_max_history_messages,
+        ai_assistant_max_context_rows=ai_assistant_max_context_rows,
+        ai_assistant_max_context_chars=ai_assistant_max_context_chars,
+        ai_assistant_max_reply_chars=ai_assistant_max_reply_chars,
     )

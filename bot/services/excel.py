@@ -20,17 +20,24 @@ def _validate_columns(df: pd.DataFrame) -> None:
         raise ValueError(f"В файле нет обязательных колонок: {missing}")
 
 
+def load_no_move_dataframe(file_path: str | Path) -> pd.DataFrame:
+    df = pd.read_excel(file_path, engine="openpyxl")
+    _validate_columns(df)
+    normalized = df.copy()
+    normalized["Стоимость"] = pd.to_numeric(
+        normalized["Стоимость"], errors="coerce"
+    ).fillna(0)
+    normalized["ШК"] = normalized["ШК"].astype(str)
+    normalized["Гофра"] = (
+        normalized["Гофра"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
+    )
+    return normalized
+
+
 def process_file(
     file_path: str | Path, export_mode: str
 ) -> Tuple[List[List], Dict, Dict]:
-    df = pd.read_excel(file_path, engine="openpyxl")
-    _validate_columns(df)
-
-    df["Стоимость"] = pd.to_numeric(df["Стоимость"], errors="coerce").fillna(0)
-    df["ШК"] = df["ШК"].astype(str)
-    df["Гофра"] = (
-        df["Гофра"].astype(str).str.strip().str.replace(r"\.0$", "", regex=True)
-    )
+    df = load_no_move_dataframe(file_path)
 
     grouped = (
         df.groupby("Гофра", as_index=False)
