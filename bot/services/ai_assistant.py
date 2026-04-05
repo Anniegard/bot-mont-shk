@@ -10,11 +10,33 @@ from typing import Any, Sequence
 import pandas as pd
 
 from bot.config import Config
+from bot.services.ai_assistant_sources import (
+    PLANNER_JSON_SCHEMA,
+    PlannerResult,
+    ResolvedYadiskFile,
+    SourceType,
+    build_folder_catalogs,
+    configured_source_types,
+    fallback_planner_from_question,
+    folder_path_for_source,
+    format_24h_snapshot_for_llm,
+    format_catalog_for_planner,
+    format_warehouse_aggregation_for_llm,
+    load_24h_snapshot_sync,
+    parse_json_lenient,
+    parse_planner_payload,
+    planner_system_prompt,
+    resolve_planner_to_files,
+    try_warehouse_consolidated_or_aggregate,
+    validate_and_normalize_plan,
+    warehouse_delay_rows_preview,
+)
 from bot.services.excel import MIN_COST_THRESHOLD, load_no_move_dataframe
 from bot.services.file_sources import maybe_extract_zip
 from bot.services.ollama_client import OllamaClient, OllamaError, OllamaMessage
 from bot.services.processing import ProcessingService
-from bot.services.yadisk import YaDiskError, yadisk_download_file, yadisk_list_latest
+from bot.services.warehouse_delay import WarehouseDelayError
+from bot.services.yadisk import YaDiskError, yadisk_download_file
 
 logger = logging.getLogger(__name__)
 
@@ -74,6 +96,15 @@ class AIAssistantResponse:
     source_path: str
     matched_rows: int
     applied_filters: tuple[str, ...]
+    sources_used: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class _ContextBlock:
+    label: str
+    text: str
+    matched_rows: int
+    applied_filters: tuple[str, ...]
 
 
 class AIAssistantService:
@@ -90,101 +121,372 @@ class AIAssistantService:
         self.ollama_client.ensure_configured()
         if not self.config.yandex_oauth_token:
             raise AIAssistantError("YANDEX_OAUTH_TOKEN не настроен.")
-        if not (self.config.yandex_no_move_dir or "").strip():
-            raise AIAssistantError("YANDEX_NO_MOVE_DIR не настроен.")
+        if not configured_source_types(self.config):
+            raise AIAssistantError(
+                "Не задана ни одна папка Я.Диска для выгрузок "
+                "(YANDEX_NO_MOVE_DIR / YANDEX_24H_DIR / YANDEX_WAREHOUSE_DELAY_DIR)."
+            )
+
+    async def _notify_status(self, status: Any, text: str) -> None:
+        if status is None:
+            return
+        edit = getattr(status, "edit_text", None)
+        if edit is None:
+            return
+        try:
+            await edit(text)
+        except Exception:
+            logger.debug("AI assistant status edit skipped", exc_info=True)
 
     async def answer_question(
         self,
         *,
         question: str,
         history: Sequence[dict[str, str]] | None = None,
+        status: Any | None = None,
     ) -> AIAssistantResponse:
         normalized_question = question.strip()
         if not normalized_question:
             raise AIAssistantError("Введите вопрос для AI-ассистента.")
         self.ensure_configured()
 
+        available = configured_source_types(self.config)
+        token = self.config.yandex_oauth_token or ""
+
         async with self.processing_service.processing_slot():
-            latest = await yadisk_list_latest(
-                self.config.yandex_oauth_token or "",
-                self.config.yandex_no_move_dir or "disk:/BOT_UPLOADS/no_move/",
-                self.config.yandex_allowed_exts,
+            await self._notify_status(status, "Собираю каталог файлов на Я.Диске…")
+            catalogs = await build_folder_catalogs(
+                config=self.config,
+                token=token,
+                per_folder_limit=self.config.ai_assistant_catalog_files_per_folder,
             )
-            dataframe = await self._download_latest_no_move_dataframe(latest)
+            if not any(cat.files for cat in catalogs.values()):
+                raise AIAssistantError(
+                    "В настроенных папках Я.Диска нет подходящих файлов (xlsx/xls/zip)."
+                )
 
-        context_payload = await asyncio.to_thread(
-            self._build_context_payload,
-            dataframe,
-            normalized_question,
-            latest.get("name") or "no_move.xlsx",
-            latest.get("path") or "",
+            catalog_text = format_catalog_for_planner(
+                catalogs,
+                max_chars=self.config.ai_assistant_planner_max_catalog_chars,
+            )
+            await self._notify_status(status, "Планирую, какие файлы нужны для ответа…")
+            plan = await self._run_planner(
+                question=normalized_question,
+                catalog_text=catalog_text,
+                available=available,
+            )
+            plan = validate_and_normalize_plan(plan, available=available)
+            if plan.need_data and not plan.sources:
+                plan = fallback_planner_from_question(
+                    normalized_question, available=available
+                )
+                logger.info("AI planner fallback applied sources=%s", plan.sources)
+
+            if not plan.need_data:
+                await self._notify_status(status, "Готовлю ответ без выгрузки файлов…")
+                answer = (plan.answer_without_data or "").strip()
+                if not answer:
+                    answer = await self._general_reply_without_files(
+                        normalized_question, history or ()
+                    )
+                finalized = self._finalize_reply(
+                    answer,
+                    source_name="—",
+                    context_payload=ContextPayload(
+                        text="",
+                        matched_rows=0,
+                        total_rows=0,
+                        applied_filters=(),
+                    ),
+                    sources_used=(),
+                )
+                return AIAssistantResponse(
+                    text=finalized,
+                    source_name="—",
+                    source_path="—",
+                    matched_rows=0,
+                    applied_filters=(),
+                    sources_used=(),
+                )
+
+            resolved = resolve_planner_to_files(
+                plan,
+                catalogs,
+                max_files=self.config.ai_assistant_max_yadisk_files_per_question,
+            )
+            resolved = _dedupe_resolved(resolved)
+            if not resolved:
+                logger.info("AI planner resolved zero files; applying keyword fallback")
+                plan_fb = fallback_planner_from_question(
+                    normalized_question, available=available
+                )
+                resolved = resolve_planner_to_files(
+                    plan_fb,
+                    catalogs,
+                    max_files=self.config.ai_assistant_max_yadisk_files_per_question,
+                )
+                resolved = _dedupe_resolved(resolved)
+            if not resolved:
+                raise AIAssistantError(
+                    "По плану нет файлов для загрузки: проверьте каталог на Я.Диске."
+                )
+
+            await self._notify_status(
+                status,
+                f"Загружаю с Я.Диска ({len(resolved)} файл(ов)) и готовлю контекст…",
+            )
+            temp_paths: list[Path] = []
+            try:
+                locals_by_type: dict[SourceType, list[tuple[str, Path]]] = {
+                    "no_move": [],
+                    "h24": [],
+                    "warehouse_delay": [],
+                }
+                for item in resolved:
+                    local = await self._download_yadisk_file(item.disk_path, item.name)
+                    temp_paths.append(local)
+                    locals_by_type[item.source_type].append((item.name, local))
+
+                blocks = await self._build_all_context_blocks(
+                    locals_by_type,
+                    normalized_question,
+                )
+            finally:
+                for p in temp_paths:
+                    self.processing_service._cleanup_temp_artifacts(p)
+
+        merged = _merge_context_blocks(
+            blocks,
+            max_chars=max(2000, self.config.ai_assistant_max_context_chars),
         )
-
-        messages = self._build_messages(
+        await self._notify_status(status, "Отправляю контекст в модель и формирую ответ…")
+        messages = self._build_messages_multi(
             question=normalized_question,
             history=history or (),
-            context_payload=context_payload,
+            context_text=merged.text,
         )
         answer_text = await self.ollama_client.chat(messages)
+        sources_used = tuple(b.label for b in blocks)
+        source_summary = "; ".join(sources_used) if sources_used else "—"
+        path_summary = "; ".join(f"{r.name}" for r in resolved[:5])
+        if len(resolved) > 5:
+            path_summary += "…"
         return AIAssistantResponse(
             text=self._finalize_reply(
                 answer_text,
-                source_name=latest.get("name") or "no_move.xlsx",
-                context_payload=context_payload,
+                source_name=source_summary,
+                context_payload=ContextPayload(
+                    text=merged.text,
+                    matched_rows=merged.matched_rows,
+                    total_rows=merged.total_rows,
+                    applied_filters=merged.applied_filters,
+                ),
+                sources_used=sources_used,
             ),
-            source_name=latest.get("name") or "no_move.xlsx",
-            source_path=latest.get("path") or "",
-            matched_rows=context_payload.matched_rows,
-            applied_filters=context_payload.applied_filters,
+            source_name=source_summary,
+            source_path=path_summary,
+            matched_rows=merged.matched_rows,
+            applied_filters=merged.applied_filters,
+            sources_used=sources_used,
         )
 
-    async def _download_latest_no_move_dataframe(self, latest: dict[str, Any]) -> pd.DataFrame:
-        suffix = Path(latest.get("name") or "source.xlsx").suffix or ".xlsx"
-        temp_path = self.processing_service.make_temp_path("ai_no_move", suffix)
+    async def _run_planner(
+        self,
+        *,
+        question: str,
+        catalog_text: str,
+        available: Sequence[SourceType],
+    ) -> PlannerResult:
+        user_content = (
+            f"Вопрос пользователя:\n{question}\n\n"
+            f"Каталог файлов на Я.Диске:\n{catalog_text}"
+        )
+        messages = [
+            OllamaMessage(role="system", content=planner_system_prompt(available)),
+            OllamaMessage(role="user", content=user_content),
+        ]
+        try:
+            raw = await self.ollama_client.chat_json(
+                messages, json_schema=PLANNER_JSON_SCHEMA
+            )
+            return parse_planner_payload(raw)
+        except OllamaError as first_exc:
+            logger.info("AI planner chat_json failed: %s", first_exc)
+        try:
+            text = await self.ollama_client.chat(messages)
+            data = parse_json_lenient(text)
+            if data:
+                return parse_planner_payload(data)
+        except OllamaError as exc:
+            logger.warning("AI planner retry failed: %s", exc)
+        return PlannerResult(need_data=True, answer_without_data=None, sources=())
+
+    async def _general_reply_without_files(
+        self,
+        question: str,
+        history: Sequence[dict[str, str]],
+    ) -> str:
+        messages = [
+            OllamaMessage(
+                role="system",
+                content=(
+                    "Ты помощник Telegram-бота выгрузок. Пользователь задал вопрос, "
+                    "не требующий данных из Excel. Ответь по-русски кратко и по делу."
+                ),
+            )
+        ]
+        for item in self.trim_history(history):
+            role = item.get("role")
+            content = (item.get("content") or "").strip()
+            if role in {"user", "assistant"} and content:
+                messages.append(OllamaMessage(role=role, content=content))
+        messages.append(OllamaMessage(role="user", content=question))
+        return await self.ollama_client.chat(messages)
+
+    async def _download_yadisk_file(self, disk_path: str, name: str) -> Path:
+        suffix = Path(name).suffix or ".xlsx"
+        temp_path = self.processing_service.make_temp_path("ai_yadisk", suffix)
         extracted_path: Path | None = None
         try:
             download_info = await yadisk_download_file(
                 self.config.yandex_oauth_token or "",
-                latest["path"],
+                disk_path,
                 str(temp_path),
                 max_bytes=self.config.yandex_max_mb * 1024 * 1024,
             )
-            prepared_path = await asyncio.to_thread(
+            prepared = await asyncio.to_thread(
                 maybe_extract_zip,
                 download_info["path"],
                 str(Path(download_info["path"]).parent),
             )
-            extracted_path = Path(prepared_path)
-            return await asyncio.to_thread(load_no_move_dataframe, extracted_path)
-        except ValueError as exc:
-            raise AIAssistantError(str(exc)) from exc
-        finally:
+            extracted_path = Path(prepared)
+            return extracted_path
+        except (ValueError, YaDiskError) as exc:
             self.processing_service._cleanup_temp_artifacts(temp_path)
             if extracted_path is not None and extracted_path != temp_path:
                 self.processing_service._cleanup_temp_artifacts(extracted_path)
+            raise AIAssistantError(str(exc)) from exc
 
-    def _build_messages(
+    async def _build_all_context_blocks(
+        self,
+        locals_by_type: dict[SourceType, list[tuple[str, Path]]],
+        question: str,
+    ) -> list[_ContextBlock]:
+        n = _count_blocks_plan(locals_by_type)
+        budget = max(800, self.config.ai_assistant_max_context_chars // max(1, n))
+        rows_budget = max(
+            10, self.config.ai_assistant_max_context_rows // max(1, n)
+        )
+        blocks: list[_ContextBlock] = []
+
+        for name, path in locals_by_type["no_move"]:
+            try:
+                df = await asyncio.to_thread(load_no_move_dataframe, path)
+            except ValueError as exc:
+                raise AIAssistantError(str(exc)) from exc
+            payload = await asyncio.to_thread(
+                self._build_context_payload,
+                df,
+                question,
+                name,
+                folder_path_for_source(self.config, "no_move"),
+                max_chars=budget,
+                max_rows=rows_budget,
+            )
+            blocks.append(
+                _ContextBlock(
+                    label=f"no_move:{name}",
+                    text=f"### Без движения — {name}\n{payload.text}",
+                    matched_rows=payload.matched_rows,
+                    applied_filters=payload.applied_filters,
+                )
+            )
+
+        for name, path in locals_by_type["h24"]:
+            snap, meta = await asyncio.to_thread(
+                load_24h_snapshot_sync,
+                str(path),
+                str(self.processing_service.block_ids_path),
+            )
+            text, shown = format_24h_snapshot_for_llm(
+                snap,
+                meta,
+                max_rows=rows_budget,
+                max_chars=budget,
+            )
+            blocks.append(
+                _ContextBlock(
+                    label=f"h24:{name}",
+                    text=f"### 24 часа — {name}\n{text}",
+                    matched_rows=shown,
+                    applied_filters=(),
+                )
+            )
+
+        wh = locals_by_type["warehouse_delay"]
+        if wh:
+            try:
+                agg = await asyncio.to_thread(
+                    try_warehouse_consolidated_or_aggregate,
+                    [(n, str(p)) for n, p in wh],
+                )
+                names = ", ".join(n for n, _ in wh)
+                text = format_warehouse_aggregation_for_llm(
+                    agg,
+                    title=f"### Задержка склада — {names}",
+                    max_chars=budget * max(1, len(wh)),
+                )
+                blocks.append(
+                    _ContextBlock(
+                        label=f"warehouse_delay:{names}",
+                        text=text,
+                        matched_rows=agg.processed_files_count,
+                        applied_filters=(),
+                    )
+                )
+            except WarehouseDelayError:
+                for name, path in wh:
+                    try:
+                        preview = await asyncio.to_thread(
+                            warehouse_delay_rows_preview,
+                            str(path),
+                            max_rows=rows_budget,
+                            max_chars=budget,
+                        )
+                    except WarehouseDelayError as exc:
+                        preview = f"(не удалось разобрать файл: {exc})"
+                    blocks.append(
+                        _ContextBlock(
+                            label=f"warehouse_delay:{name}",
+                            text=f"### Задержка склада — {name}\n{preview}",
+                            matched_rows=0,
+                            applied_filters=(),
+                        )
+                    )
+
+        return blocks
+
+    def _build_messages_multi(
         self,
         *,
         question: str,
         history: Sequence[dict[str, str]],
-        context_payload: ContextPayload,
+        context_text: str,
     ) -> list[OllamaMessage]:
         messages = [
             OllamaMessage(
                 role="system",
                 content=(
-                    "Ты AI-ассистент Telegram-бота по Excel-файлу 'Без движения'. "
-                    "Отвечай только по предоставленному контексту файла. "
-                    "Не выдумывай строки, ШК, гофры, стоимости или наименования. "
-                    "Если данных недостаточно или они обрезаны, прямо скажи об этом. "
-                    "Отвечай по-русски, кратко и по делу. "
-                    "Если пользователь просит список, используй маркированный список."
+                    "Ты AI-ассистент Telegram-бота по выгрузкам с Яндекс.Диска "
+                    "(«Без движения», «24 часа», «Задержка склада»). "
+                    "В сообщении пользователя может быть несколько разделов контекста. "
+                    "Отвечай только по приведённым данным. Не выдумывай строки, ШК, суммы. "
+                    "Если данных мало или они обрезаны — скажи об этом. "
+                    "По-русски, кратко. Списки — маркированные."
                 ),
             )
         ]
-        trimmed_history = self.trim_history(history)
-        for item in trimmed_history:
+        for item in self.trim_history(history):
             role = item.get("role")
             content = (item.get("content") or "").strip()
             if role not in {"user", "assistant"} or not content:
@@ -195,7 +497,7 @@ class AIAssistantService:
                 role="user",
                 content=(
                     f"Вопрос пользователя:\n{question}\n\n"
-                    f"Контекст файла:\n{context_payload.text}"
+                    f"Контекст из файлов:\n{context_text}"
                 ),
             )
         )
@@ -218,9 +520,15 @@ class AIAssistantService:
         question: str,
         source_name: str,
         source_path: str,
+        *,
+        max_chars: int | None = None,
+        max_rows: int | None = None,
     ) -> ContextPayload:
         if dataframe.empty:
             raise AIAssistantError("Файл пустой: в нём нет строк для анализа.")
+
+        max_chars = max_chars or max(2000, self.config.ai_assistant_max_context_chars)
+        max_rows = max_rows or max(10, self.config.ai_assistant_max_context_rows)
 
         item_name_column = self._detect_item_name_column(dataframe)
         working_df = pd.DataFrame(
@@ -245,8 +553,6 @@ class AIAssistantService:
         selected_df = filtered_df if applied_filters else working_df
         selected_df = selected_df.sort_values("Стоимость", ascending=False).reset_index(drop=True)
 
-        max_chars = max(2000, self.config.ai_assistant_max_context_chars)
-        max_rows = max(10, self.config.ai_assistant_max_context_rows)
         summary_lines = self._build_summary_lines(
             working_df=working_df,
             filtered_df=filtered_df,
@@ -418,12 +724,13 @@ class AIAssistantService:
         *,
         source_name: str,
         context_payload: ContextPayload,
+        sources_used: tuple[str, ...] | None = None,
     ) -> str:
-        parts = [f"Файл: {source_name}."]
+        parts = [f"Источники: {source_name}."]
         if context_payload.applied_filters:
             parts.append(f"Фильтры: {', '.join(context_payload.applied_filters)}.")
         if context_payload.matched_rows:
-            parts.append(f"Совпавших строк: {context_payload.matched_rows}.")
+            parts.append(f"Совпавших строк (оценка): {context_payload.matched_rows}.")
         parts.append(answer_text.strip())
         result = "\n".join(parts)
         limit = max(500, self.config.ai_assistant_max_reply_chars)
@@ -451,3 +758,62 @@ class AIAssistantService:
         if float(numeric) == float(integer_value):
             return str(integer_value)
         return f"{float(numeric):.2f}"
+
+
+def _dedupe_resolved(files: list[ResolvedYadiskFile]) -> list[ResolvedYadiskFile]:
+    seen: set[str] = set()
+    out: list[ResolvedYadiskFile] = []
+    for item in files:
+        if item.disk_path in seen:
+            continue
+        seen.add(item.disk_path)
+        out.append(item)
+    return out
+
+
+def _count_blocks_plan(locals_by_type: dict[SourceType, list[tuple[str, Path]]]) -> int:
+    n = len(locals_by_type["no_move"]) + len(locals_by_type["h24"])
+    wh = locals_by_type["warehouse_delay"]
+    if wh:
+        n += 1
+    return max(1, n)
+
+
+@dataclass(frozen=True)
+class _MergedContext:
+    text: str
+    matched_rows: int
+    total_rows: int
+    applied_filters: tuple[str, ...]
+
+
+def _merge_context_blocks(blocks: list[_ContextBlock], *, max_chars: int) -> _MergedContext:
+    if not blocks:
+        return _MergedContext(
+            text="(нет данных)",
+            matched_rows=0,
+            total_rows=0,
+            applied_filters=(),
+        )
+    parts: list[str] = []
+    total_matched = 0
+    total_all = 0
+    all_filters: list[str] = []
+    used = 0
+    for block in blocks:
+        chunk = block.text.strip()
+        if used + len(chunk) + 2 > max_chars:
+            chunk = chunk[: max(0, max_chars - used - 30)].rstrip() + "\n…(раздел обрезан)"
+        parts.append(chunk)
+        used += len(chunk) + 2
+        total_matched += block.matched_rows
+        total_all += block.matched_rows
+        all_filters.extend(block.applied_filters)
+        if used >= max_chars:
+            break
+    return _MergedContext(
+        text="\n\n".join(parts)[:max_chars],
+        matched_rows=total_matched,
+        total_rows=total_all,
+        applied_filters=tuple(dict.fromkeys(all_filters)),
+    )

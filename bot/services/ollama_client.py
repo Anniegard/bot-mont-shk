@@ -4,7 +4,7 @@ import asyncio
 import json
 import logging
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Any, Mapping, Sequence
 from urllib.parse import urlparse
 
 import aiohttp
@@ -51,9 +51,8 @@ class OllamaClient:
         if not self.model:
             raise OllamaError("OLLAMA_MODEL не настроен.")
 
-    async def chat(self, messages: Sequence[OllamaMessage]) -> str:
-        self.ensure_configured()
-        payload = {
+    def _base_payload(self, messages: Sequence[OllamaMessage]) -> dict[str, Any]:
+        return {
             "model": self.model,
             "stream": False,
             "messages": [
@@ -61,9 +60,10 @@ class OllamaClient:
             ],
             "options": {"temperature": 0.1},
         }
+
+    async def _post_chat(self, payload: dict[str, Any]) -> dict[str, Any]:
         timeout = aiohttp.ClientTimeout(total=self.timeout_seconds)
         url = f"{self.base_url}/api/chat"
-
         try:
             async with aiohttp.ClientSession(timeout=timeout) as session:
                 async with session.post(
@@ -82,18 +82,68 @@ class OllamaClient:
             ) from exc
 
         if status >= 400:
-            logger.warning("Ollama HTTP error status=%s", status)
+            logger.warning("Ollama HTTP error status=%s body_prefix=%s", status, raw_body[:200])
             raise OllamaError(
                 f"Ollama вернула HTTP {status}. Проверьте модель и доступность сервиса."
             )
 
         try:
-            data = json.loads(raw_body)
+            return json.loads(raw_body)
         except json.JSONDecodeError as exc:
             raise OllamaError("Ollama вернула некорректный JSON-ответ.") from exc
 
+    async def chat(self, messages: Sequence[OllamaMessage]) -> str:
+        self.ensure_configured()
+        data = await self._post_chat(self._base_payload(messages))
         message = data.get("message") or {}
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
             raise OllamaError("Ollama вернула пустой ответ.")
         return content.strip()
+
+    async def chat_json(
+        self,
+        messages: Sequence[OllamaMessage],
+        *,
+        json_schema: Mapping[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """
+        Ask the model for JSON. Tries JSON schema `format` first (structured outputs),
+        then falls back to format=\"json\" if the server rejects the request.
+        """
+        self.ensure_configured()
+        base = self._base_payload(messages)
+        last_error: OllamaError | None = None
+
+        if json_schema is not None:
+            payload = {**base, "format": dict(json_schema)}
+            try:
+                data = await self._post_chat(payload)
+                return _parse_message_json_object(data)
+            except OllamaError as exc:
+                last_error = exc
+                logger.info("Ollama structured format failed, trying json string mode: %s", exc)
+
+        payload_json = {**base, "format": "json"}
+        try:
+            data = await self._post_chat(payload_json)
+        except OllamaError:
+            if last_error is not None:
+                raise last_error from None
+            raise
+        return _parse_message_json_object(data)
+
+
+def _parse_message_json_object(data: dict[str, Any]) -> dict[str, Any]:
+    message = data.get("message") or {}
+    content = message.get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise OllamaError("Ollama вернула пустой JSON-ответ.")
+    text = content.strip()
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise OllamaError("Ollama вернула текст, который не является JSON.") from exc
+    if not isinstance(parsed, dict):
+        raise OllamaError("Ollama вернула JSON не-объект.")
+    return parsed

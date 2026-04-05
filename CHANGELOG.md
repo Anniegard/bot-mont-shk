@@ -4,7 +4,8 @@
 
 ### Добавлено
 
-- В Telegram-бот добавлен admin-only режим `AI-ассистент`: кнопка видна только администраторам из `BOT_ADMIN_IDS` / `ADMIN_USER_ID`, бот берёт последний Excel из `YANDEX_NO_MOVE_DIR` и отвечает через локальный Ollama.
+- В Telegram-бот добавлен admin-only режим `AI-ассистент`: кнопка видна только администраторам из `BOT_ADMIN_IDS` / `ADMIN_USER_ID`, ответы через локальный Ollama.
+- Расширение AI-ассистента: каталог файлов на Я.Диске по папкам «Без движения» / «24 часа» / «Задержка склада», планировщик (JSON), выборочная загрузка и контекст из нескольких файлов; при `need_data=false` ответ без скачивания. Модуль `bot/services/ai_assistant_sources.py`, `OllamaClient.chat_json`, переменные `AI_ASSISTANT_CATALOG_*` / `AI_ASSISTANT_MAX_YADISK_FILES_PER_QUESTION` / `AI_ASSISTANT_PLANNER_MAX_CATALOG_CHARS`.
 
 ### Изменено
 

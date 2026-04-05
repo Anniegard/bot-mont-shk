@@ -213,8 +213,8 @@ class BotHandlers:
         )
         if user and self._is_admin(user.id):
             message += (
-                "\n• 🤖 AI-ассистент — вопросы по последнему файлу "
-                "«Без движения» из папки Я.Диска."
+                "\n• 🤖 AI-ассистент — вопросы по данным с Я.Диска "
+                "(без движения, 24ч, задержка склада; несколько файлов при необходимости)."
             )
         logger.info("Команда /start user_id=%s username=%s", user.id, user.username)
         await update.message.reply_text(
@@ -263,7 +263,9 @@ class BotHandlers:
         context.user_data[AI_SESSION_ACTIVE_KEY] = True
         await update.message.reply_text(
             "Режим AI-ассистента включён.\n"
-            "Пишите вопросы по последнему файлу «Без движения» из папки Я.Диска.\n"
+            "Пишите вопросы по данным с Я.Диска: «Без движения», «24 часа», «Задержка склада». "
+            "Ассистент сам выберет нужные файлы (в т.ч. несколько) или ответит без выгрузки, "
+            "если в данных нет необходимости.\n"
             "Для выхода нажмите другую рабочую кнопку или выполните /start.",
             reply_markup=self._reply_keyboard_for_user(update.effective_user.id),
         )
@@ -654,19 +656,18 @@ class BotHandlers:
         question = (update.message.text or "").strip()
         if not question:
             await update.message.reply_text(
-                "Напишите вопрос по последнему файлу «Без движения».",
+                "Напишите вопрос по выгрузкам с Я.Диска (без движения, 24ч, задержка склада).",
                 reply_markup=self._reply_keyboard_for_user(user.id),
             )
             return
 
         history = context.user_data.get(AI_SESSION_HISTORY_KEY) or []
-        status_message = await update.message.reply_text(
-            "Смотрю последний файл «Без движения» и готовлю ответ..."
-        )
+        status_message = await update.message.reply_text("Планирую запрос и смотрю каталог Я.Диска…")
         try:
             response = await self.ai_assistant_service.answer_question(
                 question=question,
                 history=history,
+                status=status_message,
             )
             context.user_data[AI_SESSION_HISTORY_KEY] = (
                 self.ai_assistant_service.trim_history(
@@ -714,7 +715,7 @@ class BotHandlers:
         if context.user_data.get(AI_SESSION_ACTIVE_KEY):
             await update.message.reply_text(
                 "В режиме AI-ассистента файл загружать не нужно. "
-                "Просто напишите вопрос по последнему файлу «Без движения».",
+                "Напишите вопрос — данные подтянутся с Я.Диска при необходимости.",
                 reply_markup=self._reply_keyboard_for_user(user.id if user else None),
             )
             return

@@ -43,6 +43,9 @@ class Config:
     ai_assistant_max_context_rows: int = 80
     ai_assistant_max_context_chars: int = 12000
     ai_assistant_max_reply_chars: int = 3500
+    ai_assistant_catalog_files_per_folder: int = 25
+    ai_assistant_max_yadisk_files_per_question: int = 8
+    ai_assistant_planner_max_catalog_chars: int = 8000
 
 
 def _resolve_credentials_path(path_value: str, root_dir: Path) -> Path:
@@ -208,6 +211,24 @@ def load_config(
         minimum=500,
         maximum=4000,
     )
+    ai_assistant_catalog_files_per_folder = _clamp_int_env(
+        os.getenv("AI_ASSISTANT_CATALOG_FILES_PER_FOLDER"),
+        default=25,
+        minimum=5,
+        maximum=100,
+    )
+    ai_assistant_max_yadisk_files_per_question = _clamp_int_env(
+        os.getenv("AI_ASSISTANT_MAX_YADISK_FILES_PER_QUESTION"),
+        default=8,
+        minimum=1,
+        maximum=30,
+    )
+    ai_assistant_planner_max_catalog_chars = _clamp_int_env(
+        os.getenv("AI_ASSISTANT_PLANNER_MAX_CATALOG_CHARS"),
+        default=8000,
+        minimum=2000,
+        maximum=20000,
+    )
 
     missing = []
     if require_telegram_token and not telegram_token:
@@ -271,4 +292,7 @@ def load_config(
         ai_assistant_max_context_rows=ai_assistant_max_context_rows,
         ai_assistant_max_context_chars=ai_assistant_max_context_chars,
         ai_assistant_max_reply_chars=ai_assistant_max_reply_chars,
+        ai_assistant_catalog_files_per_folder=ai_assistant_catalog_files_per_folder,
+        ai_assistant_max_yadisk_files_per_question=ai_assistant_max_yadisk_files_per_question,
+        ai_assistant_planner_max_catalog_chars=ai_assistant_planner_max_catalog_chars,
     )
