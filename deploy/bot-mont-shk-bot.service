@@ -6,6 +6,7 @@ After=network.target
 Type=simple
 WorkingDirectory=/opt/Bot_Mont_SHK
 Environment=BOT_CONFIG_FILE=/opt/Bot_Mont_SHK/.env
+Environment=PYTHONUNBUFFERED=1
 ExecStart=/opt/Bot_Mont_SHK/.venv/bin/python main.py
 Restart=always
 RestartSec=5

@@ -71,6 +71,7 @@ python main_web.py
 ```
 
 По умолчанию сайт поднимается на `http://127.0.0.1:8000`, а Telegram-бот продолжает запускаться отдельно через `python main.py`.
+Если задан `TELEGRAM_WEBHOOK_URL`, бот автоматически работает в webhook-режиме, иначе остаётся polling.
 
 ### Windows / быстрый сетап
 
@@ -93,6 +94,12 @@ python main_web.py
 - `ADMIN_USER_ID` — Telegram ID администратора (опционально).
 - `BOT_ADMIN_IDS` — список Telegram ID администраторов через запятую (предпочтительный вариант для stage 5).
 - `BOT_CONFIG_FILE` — путь к .env, если используется другой файл.
+- Telegram webhook (опционально):
+  - `TELEGRAM_WEBHOOK_URL` — полный публичный HTTPS URL endpoint'а Telegram, например `https://anniland.ru/tg/webhook/<secret-path>`.
+  - `TELEGRAM_WEBHOOK_SECRET` — секрет для заголовка `X-Telegram-Bot-Api-Secret-Token` (рекомендуется обязательным).
+  - `TELEGRAM_WEBHOOK_LISTEN` — локальный адрес, где бот слушает webhook (обычно `127.0.0.1`).
+  - `TELEGRAM_WEBHOOK_PORT` — локальный порт webhook-сервера бота (например `8081`).
+  - `TELEGRAM_WEBHOOK_PATH` — локальный путь webhook (по умолчанию `/tg/webhook`); должен соответствовать пути в `TELEGRAM_WEBHOOK_URL`.
 - Яндекс.Диск (OAuth):
   - `YANDEX_OAUTH_TOKEN` — OAuth-токен Диска.
   - `YANDEX_NO_MOVE_DIR` — рекомендуемый путь `disk:/BOT_UPLOADS/no_move/`.
@@ -139,10 +146,24 @@ python main_web.py
 - Шаблоны systemd: `deploy/bot-mont-shk-web.service` и `deploy/bot-mont-shk-bot.service`.
 - Рекомендуемая схема:
   - `nginx -> 127.0.0.1:8000` для сайта;
+  - `nginx -> 127.0.0.1:8081` для Telegram webhook (`/tg/webhook/...`);
   - отдельный systemd-сервис для `python main.py`;
   - отдельный systemd-сервис для `python main_web.py`;
   - единый `.env` вне репозитория, например `/opt/Bot_Mont_SHK/.env`.
 - Перед включением HTTPS настройте DNS `AnniLand.ru` на VM и выпустите сертификат Let's Encrypt.
+
+### Чеклист переключения Telegram на webhook
+1. На VM задать в `.env` переменные `TELEGRAM_WEBHOOK_*` и убедиться, что `TELEGRAM_WEBHOOK_URL` доступен снаружи по HTTPS.
+2. В nginx добавить `location` для `/tg/webhook/` с проксированием на `127.0.0.1:8081`.
+3. Перезапустить nginx и сервис бота.
+4. Сбросить старый webhook:
+   - `curl -s "https://api.telegram.org/bot$TELEGRAM_TOKEN/deleteWebhook?drop_pending_updates=true"`
+5. Установить новый webhook:
+   - `curl -s -X POST "https://api.telegram.org/bot$TELEGRAM_TOKEN/setWebhook" -d "url=$TELEGRAM_WEBHOOK_URL" -d "secret_token=$TELEGRAM_WEBHOOK_SECRET"`
+6. Проверить статус:
+   - `curl -s "https://api.telegram.org/bot$TELEGRAM_TOKEN/getWebhookInfo"`
+   - убедиться, что `ok=true`, `pending_update_count` не растёт бесконечно, `last_error_message` пустой.
+7. Smoke-тест: отправить боту `/start` и проверить ответ + отсутствие polling-процесса.
 
 ## Линтеры и форматирование
 - Dev-зависимости: `black`, `ruff`, `pytest` в `requirements-dev.txt`.

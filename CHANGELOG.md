@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.1.2] — 2026-04-07
+
+### Изменено
+
+- Telegram-бот переведён на webhook-режим (с fallback на polling): добавлены `TELEGRAM_WEBHOOK_*` переменные, запуск через `run_webhook(...)` при наличии `TELEGRAM_WEBHOOK_URL`.
+- Обновлены deploy-шаблоны для VM: nginx-маршрут `/tg/webhook/` на порт бота и systemd-параметр `PYTHONUNBUFFERED=1`.
+- README дополнен чеклистом безопасного переключения (`deleteWebhook` → `setWebhook` → `getWebhookInfo` + smoke-тест).
+
 ## [1.1.1] — 2026-03-30
 
 ### Изменено

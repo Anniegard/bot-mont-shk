@@ -42,8 +42,23 @@ def main() -> None:
     handlers.register(application)
 
     logger.info("SQLite initialized at %s", db_path)
-    logger.info("Бот запущен. Polling начат.")
-    application.run_polling()
+    if config.telegram_webhook_url:
+        logger.info(
+            "Бот запущен. Webhook начат. path=%s listen=%s port=%s",
+            config.telegram_webhook_path,
+            config.telegram_webhook_listen,
+            config.telegram_webhook_port,
+        )
+        application.run_webhook(
+            listen=config.telegram_webhook_listen,
+            port=config.telegram_webhook_port,
+            url_path=config.telegram_webhook_path.lstrip("/"),
+            webhook_url=config.telegram_webhook_url,
+            secret_token=config.telegram_webhook_secret,
+        )
+    else:
+        logger.info("Бот запущен. Polling начат.")
+        application.run_polling()
 
 
 if __name__ == "__main__":

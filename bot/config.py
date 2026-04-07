@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 from typing import Tuple
 
 from dotenv import load_dotenv
@@ -36,6 +37,11 @@ class Config:
     web_admin_password: str | None = None
     web_user_username: str | None = None
     web_user_password: str | None = None
+    telegram_webhook_url: str | None = None
+    telegram_webhook_secret: str | None = None
+    telegram_webhook_listen: str = "127.0.0.1"
+    telegram_webhook_port: int = 8081
+    telegram_webhook_path: str = "/tg/webhook"
 
 
 def _resolve_credentials_path(path_value: str, root_dir: Path) -> Path:
@@ -86,6 +92,23 @@ def _parse_bool_env(value: str | None) -> bool:
     if normalized in {"0", "false", "no", "n", "off", ""}:
         return False
     return False
+
+
+def _normalize_webhook_path(path_value: str | None) -> str:
+    normalized = (path_value or "").strip() or "/tg/webhook"
+    if not normalized.startswith("/"):
+        normalized = f"/{normalized}"
+    return normalized.rstrip("/") or "/"
+
+
+def _extract_webhook_path(url_value: str | None) -> str | None:
+    if not url_value:
+        return None
+    try:
+        parsed = urlsplit(url_value)
+    except Exception:
+        return None
+    return parsed.path or None
 
 
 def load_config(
@@ -155,6 +178,14 @@ def load_config(
     web_admin_password = os.getenv("WEB_ADMIN_PASSWORD") or None
     web_user_username = os.getenv("WEB_USER_USERNAME") or None
     web_user_password = os.getenv("WEB_USER_PASSWORD") or None
+    telegram_webhook_url = os.getenv("TELEGRAM_WEBHOOK_URL") or None
+    telegram_webhook_secret = os.getenv("TELEGRAM_WEBHOOK_SECRET") or None
+    telegram_webhook_listen = os.getenv("TELEGRAM_WEBHOOK_LISTEN") or "127.0.0.1"
+    telegram_webhook_port = int(os.getenv("TELEGRAM_WEBHOOK_PORT") or 8081)
+    telegram_webhook_path = _normalize_webhook_path(
+        os.getenv("TELEGRAM_WEBHOOK_PATH") or _extract_webhook_path(telegram_webhook_url)
+    )
+    webhook_mode_enabled = bool(telegram_webhook_url)
 
     missing = []
     if require_telegram_token and not telegram_token:
@@ -173,6 +204,8 @@ def load_config(
         missing.append("WEB_USER_USERNAME")
     if require_web_auth and not web_user_password:
         missing.append("WEB_USER_PASSWORD")
+    if webhook_mode_enabled and not telegram_webhook_secret:
+        missing.append("TELEGRAM_WEBHOOK_SECRET")
 
     if missing:
         raise ValueError(
@@ -211,4 +244,9 @@ def load_config(
         web_admin_password=web_admin_password,
         web_user_username=web_user_username,
         web_user_password=web_user_password,
+        telegram_webhook_url=telegram_webhook_url,
+        telegram_webhook_secret=telegram_webhook_secret,
+        telegram_webhook_listen=telegram_webhook_listen,
+        telegram_webhook_port=telegram_webhook_port,
+        telegram_webhook_path=telegram_webhook_path,
     )
