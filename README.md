@@ -108,6 +108,17 @@ python main_web.py
   - `YANDEX_ALLOWED_EXTS` — по умолчанию `.xlsx,.xls,.zip`.
   - `YANDEX_MAX_MB` — лимит скачивания по OAuth (по умолчанию 200).
 - `WAREHOUSE_DELAY_WORKSHEET_NAME` — имя отдельного worksheet для сводной задержки склада.
+- Telegram AI-ассистент (опционально, только для админов):
+  - `AI_ENABLED` — включает Telegram-only AI-режим.
+  - `AI_PROVIDER` — текущий провайдер (`openai`).
+  - `AI_ADMIN_IDS` — отдельный allowlist Telegram ID для AI; если пусто, используется `BOT_ADMIN_IDS`.
+  - `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_BASE_URL` / `OPENAI_TIMEOUT_SECONDS` — настройки OpenAI.
+  - `AI_MAX_CONCURRENT_REQUESTS` — лимит одновременных AI-запросов.
+  - `AI_MAX_FILES_PER_REQUEST` — максимум источников на один AI-запрос.
+  - `AI_MAX_FILE_MB` — лимит размера файла для AI-режима.
+  - `AI_MAX_ROWS_PER_SOURCE` / `AI_MAX_SCAN_ROWS_PER_SOURCE` — лимиты детерминированной предобработки таблиц.
+  - `AI_MAX_CONTEXT_CHARS` / `AI_MAX_HISTORY_MESSAGES` / `AI_MAX_ANSWER_CHARS` — лимиты контекста, истории и ответа.
+  - `AI_MAX_RETRIES` / `AI_RETRY_BACKOFF_MS` / `AI_TEMPERATURE` — настройки устойчивости и генерации.
 - Веб-сайт:
   - `PUBLIC_BASE_URL` — внешний URL сайта, например `https://AnniLand.ru`.
   - `WEB_SECRET_KEY` — секрет для cookie-сессий. Обязателен для веба.
@@ -132,7 +143,13 @@ python main_web.py
      - «Из нескольких файлов» — бот сам скачает все файлы из `YANDEX_WAREHOUSE_DELAY_DIR` и обновит отдельный worksheet.
 3. «📎 Инструкция…» — напоминает, куда класть файлы на Я.Диск.
 4. Админ-панель — только для администраторов из `BOT_ADMIN_IDS` или `ADMIN_USER_ID`.
-5. Runtime raw DB review/search команды сейчас отключены и в Telegram не зарегистрированы.
+5. Telegram AI-режим — только для админов:
+   - `/ai` — включить AI-режим;
+   - `/ai_use no_move|24h|warehouse_delay` — добавить проектный источник;
+   - можно прислать `.xlsx/.xls/.csv/.zip` как AI-источник;
+   - `/ai_reset` — очистить AI-контекст;
+   - `/ai_exit` — выйти из AI-режима.
+6. Runtime raw DB review/search команды сейчас отключены и в Telegram не зарегистрированы.
 
 ## Яндекс.Диск (OAuth, без публичных ссылок)
 - Создайте папки `disk:/BOT_UPLOADS/no_move/`, `disk:/BOT_UPLOADS/24h/` и `disk:/BOT_UPLOADS/warehouse_delay/`.
@@ -190,6 +207,7 @@ pytest
   - warehouse delay: нормализация имени файла, mapping в canonical row name, bucketization, фильтр `без задания`, total row, пропуск непонятного файла, формирование Google Sheets matrix.
   - warehouse delay single-file: группировка по колонке `Блок`, top-10 тар без задания, dedupe по таре, пропуск невалидного времени.
   - web: login, protected dashboard, запуск обработки через форму, web-only config runtime.
+  - Telegram AI: конфиг OpenAI/лимитов, context builder, source loader, handler routing и mock-based provider calls.
 - Сознательно не покрыто на этом этапе:
   - живые интеграции с Google Sheets и Yandex Disk;
   - end-to-end обработка реальных Excel-файлов;

@@ -30,7 +30,11 @@ def build_runtime(
         require_telegram_token=require_telegram_token,
         require_web_auth=require_web_auth,
     )
-    setup_logging(config.telegram_token)
+    setup_logging(
+        config.telegram_token,
+        config.openai_api_key,
+        config.yandex_oauth_token,
+    )
     db_path = init_db(config.db_path)
     gspread_client = authorize_client(config.google_credentials_path)
 

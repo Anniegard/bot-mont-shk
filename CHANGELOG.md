@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.2.0] — 2026-04-07
+
+### Добавлено
+
+- В Telegram-бот добавлен admin-only AI-режим на OpenAI: команды `/ai`, `/ai_use`, `/ai_reset`, `/ai_exit`, загрузка AI-источников через Telegram и использование проектных источников `no_move`, `24h`, `warehouse_delay`.
+- Добавлен отдельный AI-сервисный слой (`bot/services/ai/`) с provider abstraction, `OpenAIProvider`, deterministic source loading и bounded context building.
+- Добавлены AI feature flags и лимиты (`AI_*`, `OPENAI_*`) для контролируемого rollout без включения по умолчанию.
+
+### Изменено
+
+- Логирование расширено на redaction нескольких секретов и key=value observability для AI-запросов.
+- `handlers.py` интегрирован с AI-контроллером без изменения web-потока и без переписывания существующих Excel workflow.
+
 ## [1.1.2] — 2026-04-07
 
 ### Изменено

@@ -4,15 +4,20 @@ import logging
 import re
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
-from typing import Optional
+from typing import Iterable
 
 
 class _TokenRedactor(logging.Filter):
-    def __init__(self, token: Optional[str]):
+    def __init__(self, secrets: Iterable[str | None]):
         super().__init__()
-        self.patterns = []
-        if token:
-            self.patterns = [token, f"bot{token}", re.escape(token)]
+        self.patterns: list[str] = []
+        for secret in secrets:
+            if not secret:
+                continue
+            normalized = str(secret).strip()
+            if not normalized:
+                continue
+            self.patterns.extend([normalized, f"bot{normalized}", re.escape(normalized)])
 
     def filter(self, record: logging.LogRecord) -> bool:  # type: ignore[override]
         message = record.getMessage()
@@ -24,7 +29,7 @@ class _TokenRedactor(logging.Filter):
         return True
 
 
-def setup_logging(token_to_redact: Optional[str] = None) -> None:
+def setup_logging(*secrets_to_redact: str | None) -> None:
     root_dir = Path(__file__).resolve().parent.parent
     log_dir = root_dir / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -48,8 +53,8 @@ def setup_logging(token_to_redact: Optional[str] = None) -> None:
     )
     file_handler.setFormatter(formatter)
 
-    if token_to_redact:
-        redactor = _TokenRedactor(token_to_redact)
+    if secrets_to_redact:
+        redactor = _TokenRedactor(secrets_to_redact)
         stream_handler.addFilter(redactor)
         file_handler.addFilter(redactor)
 
