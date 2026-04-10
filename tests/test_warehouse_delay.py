@@ -27,6 +27,7 @@ from bot.services.warehouse_delay import (
     calculate_file_statistics,
     is_without_assignment,
     make_empty_aggregation_map,
+    map_block_to_canonical_row,
     map_filename_to_canonical_row,
     normalize_filename,
     parse_delay_hours,
@@ -169,11 +170,24 @@ def test_map_filename_to_canonical_row_matches_aliases() -> None:
     )
 
 
+def test_map_block_to_canonical_row_uses_strict_alias_matching() -> None:
+    assert (
+        map_block_to_canonical_row("Невинномысск Б1 - Химия")
+        == "Невинномысск Б1 - Химия"
+    )
+    assert (
+        map_block_to_canonical_row("Невинномысск   Б1   Химия")
+        == "Невинномысск Б1 - Химия"
+    )
+    assert map_block_to_canonical_row("Невинномысск Б1 - Химия extra") is None
+
+
 def test_canonical_row_order_matches_summary_layout() -> None:
     assert CANONICAL_ROW_ORDER == [
         "Невинномысск",
         "Невинномысск Б1",
         "Невинномысск Б1 - Красота",
+        "Невинномысск Б1 - Химия",
         "Невинномысск Б1 КГТ",
         "Невинномысск КБ1",
         "Невинномысск КБ1 - Электроника",
@@ -346,6 +360,30 @@ def test_process_consolidated_file_groups_rows_by_block(tmp_path) -> None:
     assert aggregation.no_assignment_rows["Невинномысск Б1 - Красота"][">12ч"] == 1
     assert aggregation.no_assignment_rows["Невинномысск КБ1"][">80ч"] == 1
     assert aggregation.processed_files[0].skipped_unknown_rows == 1
+
+
+def test_process_consolidated_file_keeps_b1_chemistry_separate_from_b1(tmp_path) -> None:
+    path = tmp_path / "warehouse_delay_single.xlsx"
+    pd.DataFrame(
+        {
+            "Блок": [
+                "Невинномысск Б1 - Химия",
+                "Невинномысск Б1",
+                "Невинномысск Б1 Химия",
+            ],
+            "Тара": ["T-1", "T-2", "T-3"],
+            "Время простоя (чч:мм)": ["19:00", "19:00", "19:00"],
+            "МХ обработки": ["Ожидает", "Ожидает", "Ожидает"],
+            "Кол-во неразложенного товара": [1, 1, 1],
+        }
+    ).to_excel(path, index=False)
+
+    aggregation = process_warehouse_delay_consolidated_file(path)
+
+    assert aggregation.all_rows["Невинномысск Б1 - Химия"][">18ч"] == 2
+    assert aggregation.no_assignment_rows["Невинномысск Б1 - Химия"][">18ч"] == 2
+    assert aggregation.all_rows["Невинномысск Б1"][">18ч"] == 1
+    assert aggregation.no_assignment_rows["Невинномысск Б1"][">18ч"] == 1
 
 
 def test_process_consolidated_file_raises_for_unrecognized_blocks_only(tmp_path) -> None:

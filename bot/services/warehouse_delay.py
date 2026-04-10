@@ -15,6 +15,7 @@ CANONICAL_ROW_ORDER = [
     "Невинномысск",
     "Невинномысск Б1",
     "Невинномысск Б1 - Красота",
+    "Невинномысск Б1 - Химия",
     "Невинномысск Б1 КГТ",
     "Невинномысск КБ1",
     "Невинномысск КБ1 - Электроника",
@@ -211,6 +212,7 @@ def _build_alias_map() -> dict[str, str]:
 
 
 FILENAME_ALIAS_MAP = _build_alias_map()
+BLOCK_ALIAS_MAP = _build_alias_map()
 
 
 def map_filename_to_canonical_row(filename: str) -> str | None:
@@ -238,6 +240,13 @@ def map_filename_to_canonical_row(filename: str) -> str | None:
         if len(unique_matches) == 1:
             return unique_matches[0]
     return None
+
+
+def map_block_to_canonical_row(block_value: Any) -> str | None:
+    normalized = normalize_filename(str(block_value))
+    if not normalized:
+        return None
+    return BLOCK_ALIAS_MAP.get(normalized)
 
 
 def _empty_row_stats() -> dict[str, int]:
@@ -668,7 +677,7 @@ def process_warehouse_delay_consolidated_file(
 
     for row_index, row in dataframe.iterrows():
         block_value = row[column_mapping.block]
-        canonical_row_name = map_filename_to_canonical_row(str(block_value))
+        canonical_row_name = map_block_to_canonical_row(block_value)
         if not canonical_row_name:
             accumulator.skipped_unknown_rows += 1
             logger.info(
