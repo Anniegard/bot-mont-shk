@@ -26,6 +26,9 @@ class Config:
     yandex_max_mb: int = 200
     warehouse_delay_worksheet_name: str | None = None
     public_base_url: str | None = None
+    # Публичный сайт: телефон (не показывать, пока None) и абсолютный URL картинки для Open Graph.
+    public_phone: str | None = None
+    public_og_image_url: str | None = None
     web_secret_key: str | None = None
     web_host: str = "127.0.0.1"
     web_port: int = 8000
@@ -42,6 +45,25 @@ class Config:
     telegram_webhook_listen: str = "127.0.0.1"
     telegram_webhook_port: int = 8081
     telegram_webhook_path: str = "/tg/webhook"
+    ai_enabled: bool = False
+    ai_provider: str = "openai"
+    ai_admin_user_ids: Tuple[str, ...] = ()
+    openai_api_key: str | None = None
+    openai_model: str | None = None
+    openai_base_url: str | None = None
+    openai_timeout_seconds: int = 30
+    ai_max_concurrent_requests: int = 1
+    ai_max_files_per_request: int = 3
+    ai_max_file_mb: int = 10
+    ai_max_rows_per_source: int = 200
+    ai_max_scan_rows_per_source: int = 5000
+    ai_max_context_chars: int = 12000
+    ai_max_history_messages: int = 4
+    ai_max_answer_chars: int = 1800
+    ai_max_retries: int = 2
+    ai_retry_backoff_ms: int = 750
+    ai_temperature: float = 0.1
+    ai_source_cache_ttl_seconds: int = 300
 
 
 def _resolve_credentials_path(path_value: str, root_dir: Path) -> Path:
@@ -92,6 +114,34 @@ def _parse_bool_env(value: str | None) -> bool:
     if normalized in {"0", "false", "no", "n", "off", ""}:
         return False
     return False
+
+
+def _clamp_int_env(
+    value: str | None,
+    *,
+    default: int,
+    minimum: int,
+    maximum: int,
+) -> int:
+    try:
+        parsed = int(value or default)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(parsed, maximum))
+
+
+def _clamp_float_env(
+    value: str | None,
+    *,
+    default: float,
+    minimum: float,
+    maximum: float,
+) -> float:
+    try:
+        parsed = float(value or default)
+    except (TypeError, ValueError):
+        parsed = default
+    return max(minimum, min(parsed, maximum))
 
 
 def _normalize_webhook_path(path_value: str | None) -> str:
@@ -166,6 +216,10 @@ def load_config(
         os.getenv("WAREHOUSE_DELAY_WORKSHEET_NAME") or "Выгрузка задержка склада"
     )
     public_base_url = os.getenv("PUBLIC_BASE_URL") or None
+    _public_phone = (os.getenv("PUBLIC_PHONE") or "").strip()
+    public_phone = _public_phone or None
+    _public_og_image = (os.getenv("PUBLIC_OG_IMAGE_URL") or "").strip()
+    public_og_image_url = _public_og_image or None
     web_secret_key = os.getenv("WEB_SECRET_KEY") or None
     web_host = os.getenv("WEB_HOST") or "127.0.0.1"
     web_port = int(os.getenv("WEB_PORT") or 8000)
@@ -186,6 +240,93 @@ def load_config(
         os.getenv("TELEGRAM_WEBHOOK_PATH") or _extract_webhook_path(telegram_webhook_url)
     )
     webhook_mode_enabled = bool(telegram_webhook_url)
+    ai_enabled = _parse_bool_env(os.getenv("AI_ENABLED"))
+    ai_provider = (os.getenv("AI_PROVIDER") or "openai").strip().lower() or "openai"
+    ai_admin_user_ids = parse_admin_user_ids(
+        bot_admin_ids=os.getenv("AI_ADMIN_IDS"),
+        legacy_admin_user_id=None,
+    ) or admin_user_ids
+    openai_api_key = os.getenv("OPENAI_API_KEY") or None
+    openai_model = os.getenv("OPENAI_MODEL") or None
+    openai_base_url = (os.getenv("OPENAI_BASE_URL") or "").strip() or None
+    openai_timeout_seconds = _clamp_int_env(
+        os.getenv("OPENAI_TIMEOUT_SECONDS"),
+        default=30,
+        minimum=5,
+        maximum=180,
+    )
+    ai_max_concurrent_requests = _clamp_int_env(
+        os.getenv("AI_MAX_CONCURRENT_REQUESTS"),
+        default=1,
+        minimum=1,
+        maximum=5,
+    )
+    ai_max_files_per_request = _clamp_int_env(
+        os.getenv("AI_MAX_FILES_PER_REQUEST"),
+        default=3,
+        minimum=1,
+        maximum=10,
+    )
+    ai_max_file_mb = _clamp_int_env(
+        os.getenv("AI_MAX_FILE_MB"),
+        default=10,
+        minimum=1,
+        maximum=50,
+    )
+    ai_max_rows_per_source = _clamp_int_env(
+        os.getenv("AI_MAX_ROWS_PER_SOURCE"),
+        default=200,
+        minimum=20,
+        maximum=1000,
+    )
+    ai_max_scan_rows_per_source = _clamp_int_env(
+        os.getenv("AI_MAX_SCAN_ROWS_PER_SOURCE"),
+        default=5000,
+        minimum=100,
+        maximum=50000,
+    )
+    ai_max_context_chars = _clamp_int_env(
+        os.getenv("AI_MAX_CONTEXT_CHARS"),
+        default=12000,
+        minimum=2000,
+        maximum=40000,
+    )
+    ai_max_history_messages = _clamp_int_env(
+        os.getenv("AI_MAX_HISTORY_MESSAGES"),
+        default=4,
+        minimum=0,
+        maximum=20,
+    )
+    ai_max_answer_chars = _clamp_int_env(
+        os.getenv("AI_MAX_ANSWER_CHARS"),
+        default=1800,
+        minimum=300,
+        maximum=4000,
+    )
+    ai_max_retries = _clamp_int_env(
+        os.getenv("AI_MAX_RETRIES"),
+        default=2,
+        minimum=0,
+        maximum=5,
+    )
+    ai_retry_backoff_ms = _clamp_int_env(
+        os.getenv("AI_RETRY_BACKOFF_MS"),
+        default=750,
+        minimum=100,
+        maximum=5000,
+    )
+    ai_temperature = _clamp_float_env(
+        os.getenv("AI_TEMPERATURE"),
+        default=0.1,
+        minimum=0.0,
+        maximum=1.0,
+    )
+    ai_source_cache_ttl_seconds = _clamp_int_env(
+        os.getenv("AI_SOURCE_CACHE_TTL_SECONDS"),
+        default=300,
+        minimum=0,
+        maximum=3600,
+    )
 
     missing = []
     if require_telegram_token and not telegram_token:
@@ -234,6 +375,8 @@ def load_config(
         yandex_max_mb=yandex_max_mb,
         warehouse_delay_worksheet_name=warehouse_delay_worksheet_name,
         public_base_url=public_base_url,
+        public_phone=public_phone,
+        public_og_image_url=public_og_image_url,
         web_secret_key=web_secret_key,
         web_host=web_host,
         web_port=web_port,
@@ -249,4 +392,23 @@ def load_config(
         telegram_webhook_listen=telegram_webhook_listen,
         telegram_webhook_port=telegram_webhook_port,
         telegram_webhook_path=telegram_webhook_path,
+        ai_enabled=ai_enabled,
+        ai_provider=ai_provider,
+        ai_admin_user_ids=ai_admin_user_ids,
+        openai_api_key=openai_api_key,
+        openai_model=openai_model,
+        openai_base_url=openai_base_url,
+        openai_timeout_seconds=openai_timeout_seconds,
+        ai_max_concurrent_requests=ai_max_concurrent_requests,
+        ai_max_files_per_request=ai_max_files_per_request,
+        ai_max_file_mb=ai_max_file_mb,
+        ai_max_rows_per_source=ai_max_rows_per_source,
+        ai_max_scan_rows_per_source=ai_max_scan_rows_per_source,
+        ai_max_context_chars=ai_max_context_chars,
+        ai_max_history_messages=ai_max_history_messages,
+        ai_max_answer_chars=ai_max_answer_chars,
+        ai_max_retries=ai_max_retries,
+        ai_retry_backoff_ms=ai_retry_backoff_ms,
+        ai_temperature=ai_temperature,
+        ai_source_cache_ttl_seconds=ai_source_cache_ttl_seconds,
     )

@@ -1,8 +1,22 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "bot-mont-shk"
 version = "1.0.0"
 requires-python = ">=3.11"
-description = "Telegram bot + FastAPI website + Google Sheets tooling"
+description = "Telegram-бот и общая логика обработки (Google Sheets, Excel, Я.Диск)."
+readme = "README.md"
+dynamic = ["dependencies"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["bot*"]
+exclude = ["legacy*", "tests*"]
 
 [tool.ruff]
 line-length = 100

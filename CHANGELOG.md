@@ -1,5 +1,38 @@
 # Changelog
 
+## [1.4.0] — 2026-04-12
+
+### Изменено
+
+- Веб-интерфейс AnniLand вынесен в отдельный репозиторий [anniland-web](https://github.com/Anniegard/anniland-web). Пакет `bot-mont-shk` устанавливается из этого репозитория (`pip install` / `pip install git+https://...`) и остаётся единственным местом бизнес-логики обработки.
+- Зависимости FastAPI/uvicorn/Jinja удалены из `requirements.txt` бота — они нужны только веб-проекту.
+
+## [1.3.0] — 2026-04-12
+
+### Добавлено
+
+- Публичная главная `/` — одностраничное портфолио (контент в `web/content/portfolio_ru.py`, вёрстка `web/templates/portfolio.html`, стили `web/static/public.css`), SEO (meta, Open Graph, JSON-LD Person), favicon `web/static/favicon.png`.
+- Алиас маршрута `/workspace` → редирект на `/app`.
+- Опционально: `PUBLIC_PHONE`, `PUBLIC_OG_IMAGE_URL` в конфиге для телефона на лендинге и картинки OG.
+
+### Изменено
+
+- Шаблоны рабочей зоны переведены на `base_app.html`; публичная часть использует `base_public.html`.
+- Удалены неиспользуемые `landing.html` и `index.html`.
+
+## [1.2.0] — 2026-04-07
+
+### Добавлено
+
+- В Telegram-бот добавлен admin-only AI-режим на OpenAI: команды `/ai`, `/ai_use`, `/ai_reset`, `/ai_exit`, загрузка AI-источников через Telegram и использование проектных источников `no_move`, `24h`, `warehouse_delay`.
+- Добавлен отдельный AI-сервисный слой (`bot/services/ai/`) с provider abstraction, `OpenAIProvider`, deterministic source loading и bounded context building.
+- Добавлены AI feature flags и лимиты (`AI_*`, `OPENAI_*`) для контролируемого rollout без включения по умолчанию.
+
+### Изменено
+
+- Логирование расширено на redaction нескольких секретов и key=value observability для AI-запросов.
+- `handlers.py` интегрирован с AI-контроллером без изменения web-потока и без переписывания существующих Excel workflow.
+
 ## [1.1.2] — 2026-04-07
 
 ### Изменено

@@ -1,6 +1,6 @@
 # Bot_Mont_SHK
 
-Проект состоит из Telegram-бота и веб-сайта на FastAPI. Оба интерфейса используют общую логику обработки и пишут результат в Google Spreadsheet.
+Telegram-бот и общая библиотека обработки Excel (пакет `bot-mont-shk`). Веб-сайт [AnniLand](https://github.com/Anniegard/anniland-web) вынесен в отдельный репозиторий и подключает это ядро через `pip`. Оба интерфейса используют одну логику (`bot/services/processing.py` и связанные модули) и пишут результат в Google Spreadsheet.
 
 Основные сценарии:
 - «Без движения» (основная выгрузка)
@@ -8,8 +8,6 @@
 - «Задержка склада (сводная)»:
   - из одного сводного `.xlsx` файла;
   - из нескольких Excel/zip из отдельной папки Я.Диска.
-
-Веб-сайт рассчитан на запуск на VM Yandex Cloud под доменом `AnniLand.ru`.
 
 Кейс-синк продолжает читать только master-вкладку `Разбор потерь исх. потока`. Экспортные данные пишутся в один worksheet: левый блок для «Без движения», правый блок для «24 часа». Если `WORKSHEET_NAME` не задан или лист не найден, используется `sheet1`.
 
@@ -25,7 +23,6 @@
   - 🛠 Админ-панель (только для администраторов из `BOT_ADMIN_IDS` или `ADMIN_USER_ID`).
 - Runtime raw DB features сейчас отключены: review/search команды для `raw_yadisk_rows` и кейсов не зарегистрированы в боте.
 - Приём входных данных: документ в Telegram до 20 МБ, Яндекс.Диск (OAuth), zip с Excel внутри.
-- Веб-сайт повторяет эти же сценарии через страницы/формы, сессии, CSRF, rate limit и защищённую веб-админку для просмотра логов.
 - «Без движения»: группировка по «Гофра», идентификаторы товара собираются через `\n` в одной ячейке, фильтр `Стоимость > 2000`, колонка названа «Идентификатор товара».
 - «24 часа»: берётся snapshot, пересекается с картой ID тары из «Без движения», группируется по ID тары, берётся минимальный прогноз по группе, сортируется по времени.
 - Логирование действий в `logs/bot.log` (ротация 5MB×3) + stdout.
@@ -58,20 +55,13 @@ cd Bot_Mont_SHK
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+# или: pip install -e .
 pip install -r requirements-dev.txt  # для линтеров/форматтера
 cp .env.example .env   # заполните переменные
 python main.py
 ```
 
-### Запуск веб-сайта локально
-
-```bash
-source .venv/bin/activate
-python main_web.py
-```
-
-По умолчанию сайт поднимается на `http://127.0.0.1:8000`, а Telegram-бот продолжает запускаться отдельно через `python main.py`.
-Если задан `TELEGRAM_WEBHOOK_URL`, бот автоматически работает в webhook-режиме, иначе остаётся polling.
+Если задан `TELEGRAM_WEBHOOK_URL`, бот автоматически работает в webhook-режиме, иначе остаётся polling. Сайт запускается из репозитория [anniland-web](https://github.com/Anniegard/anniland-web).
 
 ### Windows / быстрый сетап
 
@@ -108,13 +98,18 @@ python main_web.py
   - `YANDEX_ALLOWED_EXTS` — по умолчанию `.xlsx,.xls,.zip`.
   - `YANDEX_MAX_MB` — лимит скачивания по OAuth (по умолчанию 200).
 - `WAREHOUSE_DELAY_WORKSHEET_NAME` — имя отдельного worksheet для сводной задержки склада.
-- Веб-сайт:
-  - `PUBLIC_BASE_URL` — внешний URL сайта, например `https://AnniLand.ru`.
-  - `WEB_SECRET_KEY` — секрет для cookie-сессий. Обязателен для веба.
-  - `WEB_HOST` / `WEB_PORT` — хост и порт FastAPI-приложения.
-  - `WEB_RATE_LIMIT_PER_MINUTE` — лимит POST-запросов на IP в минуту.
-  - `WEB_MAX_UPLOAD_MB` — лимит загрузки файла через веб-форму.
-  - `WEB_ADMIN_USERNAME` / `WEB_ADMIN_PASSWORD` — логин и пароль для входа в web-workspace.
+- Telegram AI-ассистент (опционально, только для админов):
+  - `AI_ENABLED` — включает Telegram-only AI-режим.
+  - `AI_PROVIDER` — текущий провайдер (`openai`).
+  - `AI_ADMIN_IDS` — отдельный allowlist Telegram ID для AI; если пусто, используется `BOT_ADMIN_IDS`.
+  - `OPENAI_API_KEY` / `OPENAI_MODEL` / `OPENAI_BASE_URL` / `OPENAI_TIMEOUT_SECONDS` — настройки OpenAI.
+  - `AI_MAX_CONCURRENT_REQUESTS` — лимит одновременных AI-запросов.
+  - `AI_MAX_FILES_PER_REQUEST` — максимум источников на один AI-запрос.
+  - `AI_MAX_FILE_MB` — лимит размера файла для AI-режима.
+  - `AI_MAX_ROWS_PER_SOURCE` / `AI_MAX_SCAN_ROWS_PER_SOURCE` — лимиты детерминированной предобработки таблиц.
+  - `AI_MAX_CONTEXT_CHARS` / `AI_MAX_HISTORY_MESSAGES` / `AI_MAX_ANSWER_CHARS` — лимиты контекста, истории и ответа.
+  - `AI_MAX_RETRIES` / `AI_RETRY_BACKOFF_MS` / `AI_TEMPERATURE` — настройки устойчивости и генерации.
+- Переменные веб-приложения (`WEB_*`, `PUBLIC_BASE_URL`, …) — см. [anniland-web](https://github.com/Anniegard/anniland-web); при общем `.env` с ботом перечень совпадает с прежним.
 
 ## Файлы данных
 - `data/block_ids.txt` — whitelist ID Блока (по одному в строке). Шаблон: `data/block_ids.txt.example`.
@@ -132,7 +127,13 @@ python main_web.py
      - «Из нескольких файлов» — бот сам скачает все файлы из `YANDEX_WAREHOUSE_DELAY_DIR` и обновит отдельный worksheet.
 3. «📎 Инструкция…» — напоминает, куда класть файлы на Я.Диск.
 4. Админ-панель — только для администраторов из `BOT_ADMIN_IDS` или `ADMIN_USER_ID`.
-5. Runtime raw DB review/search команды сейчас отключены и в Telegram не зарегистрированы.
+5. Telegram AI-режим — только для админов:
+   - `/ai` — включить AI-режим;
+   - `/ai_use no_move|24h|warehouse_delay` — добавить проектный источник;
+   - можно прислать `.xlsx/.xls/.csv/.zip` как AI-источник;
+   - `/ai_reset` — очистить AI-контекст;
+   - `/ai_exit` — выйти из AI-режима.
+6. Runtime raw DB review/search команды сейчас отключены и в Telegram не зарегистрированы.
 
 ## Яндекс.Диск (OAuth, без публичных ссылок)
 - Создайте папки `disk:/BOT_UPLOADS/no_move/`, `disk:/BOT_UPLOADS/24h/` и `disk:/BOT_UPLOADS/warehouse_delay/`.
@@ -141,16 +142,14 @@ python main_web.py
 - Для `📦 Задержка склада (сводная) → Из одного файла` кнопка «☁️ Взять с Я.Диска…» берёт последний файл из `YANDEX_WAREHOUSE_DELAY_DIR`.
 - Для `📦 Задержка склада (сводная) → Из нескольких файлов` бот читает все подходящие файлы из `YANDEX_WAREHOUSE_DELAY_DIR`, скачивает их по очереди во временную директорию и после обработки удаляет временные файлы.
 
-## Деплой сайта и бота на VM
-- Шаблон nginx: `deploy/anniland.nginx.conf`.
-- Шаблоны systemd: `deploy/bot-mont-shk-web.service` и `deploy/bot-mont-shk-bot.service`.
+## Деплой бота на VM
+- Шаблон systemd: `deploy/bot-mont-shk-bot.service` (и дубликат в `deploy/systemd/`).
 - Рекомендуемая схема:
-  - `nginx -> 127.0.0.1:8000` для сайта;
   - `nginx -> 127.0.0.1:8081` для Telegram webhook (`/tg/webhook/...`);
   - отдельный systemd-сервис для `python main.py`;
-  - отдельный systemd-сервис для `python main_web.py`;
-  - единый `.env` вне репозитория, например `/opt/Bot_Mont_SHK/.env`.
-- Перед включением HTTPS настройте DNS `AnniLand.ru` на VM и выпустите сертификат Let's Encrypt.
+  - сайт и nginx для `anniland.ru` — в репозитории [anniland-web](https://github.com/Anniegard/anniland-web) (`deploy/` там);
+  - `.env` можно хранить один на оба процесса или разделить; пути к `data/` настройте так, чтобы бот и веб видели одни и те же файлы snapshot/карт (часто symlink общего каталога `data/`).
+- Перед включением HTTPS настройте DNS `anniland.ru` на VM и выпустите сертификат Let's Encrypt.
 
 ### Чеклист переключения Telegram на webhook
 1. На VM задать в `.env` переменные `TELEGRAM_WEBHOOK_*` и убедиться, что `TELEGRAM_WEBHOOK_URL` доступен снаружи по HTTPS.
@@ -189,7 +188,7 @@ pytest
   - parsing `BOT_ADMIN_IDS` / `ADMIN_USER_ID`.
   - warehouse delay: нормализация имени файла, mapping в canonical row name, bucketization, фильтр `без задания`, total row, пропуск непонятного файла, формирование Google Sheets matrix.
   - warehouse delay single-file: группировка по колонке `Блок`, top-10 тар без задания, dedupe по таре, пропуск невалидного времени.
-  - web: login, protected dashboard, запуск обработки через форму, web-only config runtime.
+  - Telegram AI: конфиг OpenAI/лимитов, context builder, source loader, handler routing и mock-based provider calls.
 - Сознательно не покрыто на этом этапе:
   - живые интеграции с Google Sheets и Yandex Disk;
   - end-to-end обработка реальных Excel-файлов;
@@ -203,4 +202,4 @@ pytest
 - Одна обработка за раз (async lock).
 - Документы в Telegram — до 20 МБ; большие файлы — только через Я.Диск (кнопка «Взять с Я.Диска»).
 
-Актуальные точки входа: `python main.py` для Telegram-бота и `python main_web.py` для сайта. Папка `legacy/` содержит старую версию бота для справки.
+Точка входа бота: `python main.py`. Веб-приложение — репозиторий [anniland-web](https://github.com/Anniegard/anniland-web). Папка `legacy/` содержит старую версию бота для справки.

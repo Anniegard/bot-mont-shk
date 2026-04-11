@@ -22,6 +22,7 @@ from telegram.ext import (
 )
 
 from bot.config import Config
+from bot.services.ai.assistant import AIAssistantError
 from bot.services.excel import (
     EXPORT_ONLY_TRANSFERS,
     EXPORT_WITH_TRANSFERS,
@@ -36,6 +37,7 @@ from bot.services.processing import (
 )
 from bot.services.yadisk import YaDiskError, yadisk_list_files
 from bot.services.yadisk_ingest import SOURCE_KIND_24H, SOURCE_KIND_NO_MOVE
+from bot.telegram_ai import TelegramAIController
 
 logger = logging.getLogger(__name__)
 
@@ -102,6 +104,11 @@ class BotHandlers:
             no_move_map_path=self.no_move_map_path,
         )
         self.processing_lock = self.processing_service.lock
+        self.telegram_ai = TelegramAIController(
+            config=config,
+            processing_service=self.processing_service,
+            is_admin=self._is_ai_admin,
+        )
 
         self.reply_keyboard = ReplyKeyboardMarkup(
             [
@@ -126,6 +133,10 @@ class BotHandlers:
     def register(self, application: Application) -> None:
         application.add_handler(CommandHandler("start", self.start))
         application.add_handler(CommandHandler("admin", self.admin))
+        application.add_handler(CommandHandler("ai", self.ai_enter))
+        application.add_handler(CommandHandler("ai_use", self.ai_use))
+        application.add_handler(CommandHandler("ai_reset", self.ai_reset))
+        application.add_handler(CommandHandler("ai_exit", self.ai_exit))
         application.add_handler(
             MessageHandler(
                 filters.Regex(f"^{re.escape(BUTTON_NO_MOVE)}$"), self.select_no_move
@@ -173,6 +184,7 @@ class BotHandlers:
 
     async def start(self, update: Update, context: CallbackContext) -> None:
         user = update.effective_user
+        self.telegram_ai.reset_session(context)
         context.user_data["expected_upload"] = None
         context.user_data[WAREHOUSE_DELAY_MODE_KEY] = None
         message = (
@@ -185,6 +197,39 @@ class BotHandlers:
         )
         logger.info("Команда /start user_id=%s username=%s", user.id, user.username)
         await update.message.reply_text(message, reply_markup=self.reply_keyboard)
+
+    async def ai_enter(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_ai_admin_access(update, command_name="/ai"):
+            return
+        try:
+            await self.telegram_ai.enter_ai_mode(update, context)
+        except AIAssistantError as exc:
+            await update.effective_message.reply_text(str(exc))
+
+    async def ai_use(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_ai_admin_access(update, command_name="/ai_use"):
+            return
+        try:
+            await self.telegram_ai.add_named_source(
+                update,
+                context,
+                context.args[0] if context.args else None,
+            )
+        except AIAssistantError as exc:
+            await update.effective_message.reply_text(str(exc))
+
+    async def ai_reset(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_ai_admin_access(update, command_name="/ai_reset"):
+            return
+        try:
+            await self.telegram_ai.reset_ai_context(update, context)
+        except AIAssistantError as exc:
+            await update.effective_message.reply_text(str(exc))
+
+    async def ai_exit(self, update: Update, context: CallbackContext) -> None:
+        if not await self._ensure_ai_admin_access(update, command_name="/ai_exit"):
+            return
+        await self.telegram_ai.exit_ai_mode(update, context)
 
     async def admin(self, update: Update, context: CallbackContext) -> None:
         if not await self._ensure_admin_access(update, command_name="/admin"):
@@ -275,6 +320,7 @@ class BotHandlers:
         await self._reply_runtime_db_features_disabled(update, "/raw_pending")
 
     async def select_no_move(self, update: Update, context: CallbackContext) -> None:
+        self.telegram_ai.reset_session(context)
         context.user_data["expected_upload"] = EXPECTED_NO_MOVE
         context.user_data[NO_MOVE_EXPORT_KEY] = None
         context.user_data[WAREHOUSE_DELAY_MODE_KEY] = None
@@ -288,6 +334,7 @@ class BotHandlers:
         )
 
     async def select_24h(self, update: Update, context: CallbackContext) -> None:
+        self.telegram_ai.reset_session(context)
         context.user_data["expected_upload"] = EXPECTED_24H
         context.user_data[WAREHOUSE_DELAY_MODE_KEY] = None
         user = update.effective_user
@@ -300,6 +347,7 @@ class BotHandlers:
     async def handle_warehouse_delay_summary(
         self, update: Update, context: CallbackContext
     ) -> None:
+        self.telegram_ai.reset_session(context)
         context.user_data["expected_upload"] = None
         context.user_data[WAREHOUSE_DELAY_MODE_KEY] = None
         await update.message.reply_text(
@@ -553,6 +601,14 @@ class BotHandlers:
             await status_message.edit_text("Не удалось получить файл с Я.Диска.")
 
     async def handle_text(self, update: Update, context: CallbackContext) -> None:
+        if self.telegram_ai.has_active_session(context):
+            try:
+                handled = await self.telegram_ai.handle_question(update, context)
+            except AIAssistantError as exc:
+                await update.effective_message.reply_text(str(exc))
+                return
+            if handled:
+                return
         await update.message.reply_text(
             "Выберите режим кнопкой снизу и пришлите Excel как документ (до 20 МБ) "
             "или воспользуйтесь «☁️ Взять с Я.Диска». Загрузка по ссылке отключена.",
@@ -560,6 +616,14 @@ class BotHandlers:
         )
 
     async def handle_file(self, update: Update, context: CallbackContext) -> None:
+        if self.telegram_ai.has_active_session(context):
+            try:
+                handled = await self.telegram_ai.handle_uploaded_source(update, context)
+            except AIAssistantError as exc:
+                await update.effective_message.reply_text(str(exc))
+                return
+            if handled:
+                return
         user = update.effective_user
         document = update.message.document
         expected = context.user_data.get("expected_upload")
@@ -749,6 +813,37 @@ class BotHandlers:
 
         logger.warning(
             "Admin access denied command=%s user_id=%s username=%s",
+            command_name,
+            user.id if user else None,
+            user.username if user else None,
+        )
+        if message:
+            await message.reply_text("У вас нет прав для этой команды.")
+        return False
+
+    async def _ensure_ai_admin_access(
+        self, update: Update, command_name: str | None = None
+    ) -> bool:
+        user = update.effective_user
+        message = update.effective_message
+        if not self.config.ai_admin_user_ids:
+            logger.warning(
+                "AI command unavailable: ids not configured command=%s user_id=%s username=%s",
+                command_name,
+                user.id if user else None,
+                user.username if user else None,
+            )
+            if message:
+                await message.reply_text(
+                    "AI-команды не настроены. Укажите AI_ADMIN_IDS или BOT_ADMIN_IDS."
+                )
+            return False
+
+        if user and self._is_ai_admin(user.id):
+            return True
+
+        logger.warning(
+            "AI admin access denied command=%s user_id=%s username=%s",
             command_name,
             user.id if user else None,
             user.username if user else None,
@@ -965,3 +1060,6 @@ class BotHandlers:
 
     def _is_admin(self, user_id: int) -> bool:
         return str(user_id) in self.config.admin_user_ids
+
+    def _is_ai_admin(self, user_id: int) -> bool:
+        return str(user_id) in self.config.ai_admin_user_ids

@@ -1,5 +1,9 @@
 .venv/
+.venv*/
 .env
+.pytest_cache/
+*.egg-info/
+data/tmp/
 
 # Cursor IDE: rules, skills, hooks, composer, индексация, агенты (локально)
 .cursor/
