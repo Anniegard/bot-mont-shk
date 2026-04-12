@@ -4,7 +4,7 @@ import asyncio
 from pathlib import Path
 
 from bot.services import yadisk as yadisk_module
-from bot.services.yadisk import YaDiskError, yadisk_download_file
+from bot.services.yadisk import YaDiskError, _download_stream, yadisk_download_file
 
 
 class FakeResponse:
@@ -93,4 +93,40 @@ def test_yadisk_download_file_rejects_invalid_href(tmp_path: Path, monkeypatch) 
             assert "Недопустимая ссылка" in str(exc)
         else:
             raise AssertionError("Expected YaDiskError for invalid href")
+
+
+def test_download_stream_wraps_timeout_error_from_reader(tmp_path: Path) -> None:
+    """aiohttp поднимает asyncio.TimeoutError при таймауте чтения; оборачиваем в YaDiskError."""
+
+    class FakeResp:
+        status = 200
+
+        async def __aenter__(self) -> FakeResp:
+            return self
+
+        async def __aexit__(self, *_args: object) -> None:
+            return None
+
+        class _Content:
+            async def iter_chunked(self, _n: int):
+                raise asyncio.TimeoutError()
+                yield b""  # pragma: no cover
+
+        content = _Content()
+
+    class FakeSession:
+        def get(self, *_a: object, **_k: object) -> FakeResp:
+            return FakeResp()
+
+    dest = tmp_path / "out.bin"
+
+    async def run() -> None:
+        await _download_stream(FakeSession(), "https://download.yandex.net/x", dest, 10**9)
+
+    try:
+        asyncio.run(run())
+    except YaDiskError as exc:
+        assert "Таймаут при скачивании" in str(exc)
+    else:
+        raise AssertionError("Expected YaDiskError when stream read times out")
 

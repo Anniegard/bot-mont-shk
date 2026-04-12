@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 from urllib.parse import urlparse
 from typing import Dict, Tuple
@@ -9,6 +10,21 @@ import logging
 import aiohttp
 
 logger = logging.getLogger(__name__)
+
+# Cloud API (список файлов, ссылка на скачивание): конечные пределы, чтобы не зависать.
+YADISK_CLOUD_API_TIMEOUT = aiohttp.ClientTimeout(
+    total=120.0,
+    connect=60.0,
+    sock_connect=60.0,
+    sock_read=90.0,
+)
+# Поток скачивания по href: долгий total, но ограничение на «молчащий» сокет.
+YADISK_DOWNLOAD_STREAM_TIMEOUT = aiohttp.ClientTimeout(
+    total=7200.0,
+    connect=60.0,
+    sock_connect=60.0,
+    sock_read=600.0,
+)
 
 
 class YaDiskError(Exception):
@@ -82,12 +98,24 @@ async def yadisk_list_latest(
     folder_norm = _normalize_path(folder_path, ensure_dir=True)
     url = "https://cloud-api.yandex.net/v1/disk/resources"
     params = {"path": folder_norm, "limit": 50, "sort": "modified"}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            url, headers=_auth_headers(token), params=params, timeout=15
-        ) as resp:
-            await _raise_for_status(resp)
-            data = await resp.json()
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url,
+                headers=_auth_headers(token),
+                params=params,
+                timeout=YADISK_CLOUD_API_TIMEOUT,
+            ) as resp:
+                await _raise_for_status(resp)
+                data = await resp.json()
+    except asyncio.TimeoutError as exc:
+        raise YaDiskError(
+            "Таймаут при получении списка файлов с Яндекс.Диска. Проверьте сеть и повторите попытку."
+        ) from exc
+    except aiohttp.ClientError as exc:
+        raise YaDiskError(
+            "Сетевая ошибка при обращении к API Яндекс.Диска. Проверьте подключение."
+        ) from exc
     embedded = data.get("_embedded", {})
     items = embedded.get("items", [])
     files = [
@@ -117,29 +145,41 @@ async def yadisk_list_files(
     limit = 200
     items: list[Dict] = []
 
-    async with aiohttp.ClientSession() as session:
-        while True:
-            params = {
-                "path": folder_norm,
-                "limit": limit,
-                "offset": offset,
-                "sort": "name",
-            }
-            async with session.get(
-                url, headers=_auth_headers(token), params=params, timeout=15
-            ) as resp:
-                await _raise_for_status(resp)
-                data = await resp.json()
+    try:
+        async with aiohttp.ClientSession() as session:
+            while True:
+                params = {
+                    "path": folder_norm,
+                    "limit": limit,
+                    "offset": offset,
+                    "sort": "name",
+                }
+                async with session.get(
+                    url,
+                    headers=_auth_headers(token),
+                    params=params,
+                    timeout=YADISK_CLOUD_API_TIMEOUT,
+                ) as resp:
+                    await _raise_for_status(resp)
+                    data = await resp.json()
 
-            embedded = data.get("_embedded", {})
-            page_items = embedded.get("items", [])
-            if not page_items:
-                break
+                embedded = data.get("_embedded", {})
+                page_items = embedded.get("items", [])
+                if not page_items:
+                    break
 
-            items.extend(page_items)
-            if len(page_items) < limit:
-                break
-            offset += limit
+                items.extend(page_items)
+                if len(page_items) < limit:
+                    break
+                offset += limit
+    except asyncio.TimeoutError as exc:
+        raise YaDiskError(
+            "Таймаут при получении списка файлов с Яндекс.Диска. Проверьте сеть и повторите попытку."
+        ) from exc
+    except aiohttp.ClientError as exc:
+        raise YaDiskError(
+            "Сетевая ошибка при обращении к API Яндекс.Диска. Проверьте подключение."
+        ) from exc
 
     files = [
         {
@@ -164,17 +204,27 @@ async def _download_stream(
 ) -> int:
     downloaded = 0
     dest_path.parent.mkdir(parents=True, exist_ok=True)
-    async with session.get(url, timeout=aiohttp.ClientTimeout(total=None)) as resp:
-        await _raise_for_status(resp)
-        with dest_path.open("wb") as f:
-            async for chunk in resp.content.iter_chunked(1024 * 64):
-                if chunk:
-                    downloaded += len(chunk)
-                    if downloaded > max_bytes:
-                        raise YaDiskError(
-                            "Скачивание прервано: файл превышает допустимый размер."
-                        )
-                    f.write(chunk)
+    try:
+        async with session.get(url, timeout=YADISK_DOWNLOAD_STREAM_TIMEOUT) as resp:
+            await _raise_for_status(resp)
+            with dest_path.open("wb") as f:
+                async for chunk in resp.content.iter_chunked(1024 * 64):
+                    if chunk:
+                        downloaded += len(chunk)
+                        if downloaded > max_bytes:
+                            raise YaDiskError(
+                                "Скачивание прервано: файл превышает допустимый размер."
+                            )
+                        f.write(chunk)
+    except asyncio.TimeoutError as exc:
+        raise YaDiskError(
+            "Таймаут при скачивании файла с Яндекс.Диска (долго нет данных по сети). "
+            "Проверьте соединение или размер файла и повторите попытку."
+        ) from exc
+    except aiohttp.ClientError as exc:
+        raise YaDiskError(
+            "Сетевая ошибка при скачивании файла с Яндекс.Диска. Проверьте подключение."
+        ) from exc
     return downloaded
 
 
@@ -184,20 +234,34 @@ async def yadisk_download_file(
     file_norm = _normalize_path(file_path, ensure_dir=False)
     url = "https://cloud-api.yandex.net/v1/disk/resources/download"
     params = {"path": file_norm}
-    async with aiohttp.ClientSession() as session:
-        async with session.get(
-            url, headers=_auth_headers(token), params=params, timeout=15
-        ) as resp:
-            await _raise_for_status(resp)
-            data = await resp.json()
-        href = data.get("href")
-        if not isinstance(href, str) or not href.strip():
-            raise YaDiskError("Не удалось получить ссылку для скачивания файла.")
-        href = href.strip()
-        if not _is_allowed_yadisk_download_href(href):
-            raise YaDiskError(
-                "Недопустимая ссылка для скачивания Я.Диска. Ожидается HTTPS на хостах "
-                "yandex.net/yandex.ru (включая поддомены)."
-            )
-        size = await _download_stream(session, href, Path(dest_path), max_bytes)
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                url,
+                headers=_auth_headers(token),
+                params=params,
+                timeout=YADISK_CLOUD_API_TIMEOUT,
+            ) as resp:
+                await _raise_for_status(resp)
+                data = await resp.json()
+            href = data.get("href")
+            if not isinstance(href, str) or not href.strip():
+                raise YaDiskError("Не удалось получить ссылку для скачивания файла.")
+            href = href.strip()
+            if not _is_allowed_yadisk_download_href(href):
+                raise YaDiskError(
+                    "Недопустимая ссылка для скачивания Я.Диска. Ожидается HTTPS на хостах "
+                    "yandex.net/yandex.ru (включая поддомены)."
+                )
+            size = await _download_stream(session, href, Path(dest_path), max_bytes)
+    except YaDiskError:
+        raise
+    except asyncio.TimeoutError as exc:
+        raise YaDiskError(
+            "Таймаут при запросе ссылки на скачивание с Яндекс.Диска. Проверьте сеть."
+        ) from exc
+    except aiohttp.ClientError as exc:
+        raise YaDiskError(
+            "Сетевая ошибка при обращении к API Яндекс.Диска. Проверьте подключение."
+        ) from exc
     return {"path": dest_path, "size": size}

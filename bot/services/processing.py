@@ -4,6 +4,8 @@ import asyncio
 import logging
 import os
 import time
+import zipfile
+from collections.abc import Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -38,6 +40,9 @@ EXPECTED_WAREHOUSE_DELAY_SINGLE = "warehouse_delay_single"
 EXPECTED_WAREHOUSE_DELAY_MULTIPLE = "warehouse_delay_multiple"
 WAREHOUSE_DELAY_TZ = ZoneInfo("Europe/Moscow")
 GLOBAL_LOCK_STALE_SECONDS = 6 * 60 * 60
+
+# Optional progress for web UI: (step_title, detail_message, duration_ms_for_previous_phase_or_none).
+ProgressCallback = Callable[[str, str, int | None], None]
 
 
 class WorkflowError(Exception):
@@ -90,6 +95,20 @@ class ProcessingService:
         self.lock = asyncio.Lock()
         self.global_lock_path = self.workdir / "data" / "processing.lock"
 
+    @staticmethod
+    def _notify_progress(
+        progress_cb: ProgressCallback | None,
+        step: str,
+        message: str,
+        duration_ms: int | None = None,
+    ) -> None:
+        if progress_cb is not None:
+            progress_cb(step, message, duration_ms)
+
+    @staticmethod
+    def _elapsed_ms(start: float) -> int:
+        return int((time.perf_counter() - start) * 1000)
+
     def make_temp_path(self, prefix: str, suffix: str) -> Path:
         temp_dir = self.workdir / "data" / "tmp"
         temp_dir.mkdir(parents=True, exist_ok=True)
@@ -135,6 +154,7 @@ class ProcessingService:
                 prepared_path_obj,
                 file_info,
                 no_move_export_mode=no_move_export_mode,
+                progress_cb=None,
             )
         finally:
             if prepared_path_obj != original_path:
@@ -145,19 +165,82 @@ class ProcessingService:
         expected: str,
         *,
         no_move_export_mode: str | None = None,
+        progress_cb: ProgressCallback | None = None,
     ) -> WorkflowOutcome:
         token = self._require_yadisk_token()
         folder = self._folder_for_expected(expected)
+        t_phase = time.perf_counter()
+        logger.info(
+            "yadisk flow: resolved folder expected=%s folder=%s",
+            expected,
+            folder,
+        )
+        self._notify_progress(
+            progress_cb,
+            "Папка на Я.Диске",
+            f"Режим {expected}, каталог: {folder}",
+            self._elapsed_ms(t_phase),
+        )
+
+        t_phase = time.perf_counter()
+        self._notify_progress(
+            progress_cb,
+            "Список файлов",
+            "Запрашиваем последний подходящий файл в папке…",
+            None,
+        )
         latest = await yadisk_list_latest(token, folder, self.config.yandex_allowed_exts)
+        yname = latest.get("name") or "?"
+        ypath = latest.get("path") or "?"
+        logger.info(
+            "yadisk flow: list_latest done expected=%s file=%s path=%s ms=%s",
+            expected,
+            yname,
+            ypath,
+            self._elapsed_ms(t_phase),
+        )
+        self._notify_progress(
+            progress_cb,
+            "Найден последний файл",
+            f"«{yname}» ({ypath})",
+            self._elapsed_ms(t_phase),
+        )
+
         suffix = self._suffix_from_name(latest.get("name") or "source.xlsx")
         temp_path = self.make_temp_path("yadisk_latest", suffix)
         extracted_path: Path | None = None
         try:
+            t_phase = time.perf_counter()
+            self._notify_progress(
+                progress_cb,
+                "Скачивание",
+                f"Начато скачивание во временный файл: {temp_path}",
+                None,
+            )
+            logger.info(
+                "yadisk flow: download start expected=%s local=%s yadisk_path=%s",
+                expected,
+                temp_path,
+                ypath,
+            )
             download_info = await yadisk_download_file(
                 token,
                 latest["path"],
                 str(temp_path),
                 max_bytes=self.config.yandex_max_mb * 1024 * 1024,
+            )
+            sz = download_info.get("size")
+            logger.info(
+                "yadisk flow: download done expected=%s bytes=%s ms=%s",
+                expected,
+                sz,
+                self._elapsed_ms(t_phase),
+            )
+            self._notify_progress(
+                progress_cb,
+                "Скачивание завершено",
+                f"Сохранено {sz} байт → {temp_path}",
+                self._elapsed_ms(t_phase),
             )
             file_info = SourceFileInfo(
                 filename=latest["name"],
@@ -165,17 +248,67 @@ class ProcessingService:
                 source="yandex_disk_oauth",
                 source_path=latest["path"],
             )
-            prepared_path = await asyncio.to_thread(
-                maybe_extract_zip,
-                download_info["path"],
-                str(Path(download_info["path"]).parent),
+            t_phase = time.perf_counter()
+            self._notify_progress(
+                progress_cb,
+                "Распаковка",
+                "При необходимости распаковываем ZIP…",
+                None,
             )
+            try:
+                prepared_path = await asyncio.to_thread(
+                    maybe_extract_zip,
+                    download_info["path"],
+                    str(Path(download_info["path"]).parent),
+                )
+            except (ValueError, zipfile.BadZipFile, OSError) as exc:
+                logger.exception(
+                    "yadisk flow: zip/excel extract failed expected=%s file=%s",
+                    expected,
+                    yname,
+                )
+                raise WorkflowError(
+                    "Не удалось открыть архив или в нём нет файла Excel (.xlsx/.xls). "
+                    "Проверьте, что загружен корректный ZIP."
+                ) from exc
             extracted_path = Path(prepared_path)
+            logger.info(
+                "yadisk flow: extract done expected=%s prepared=%s ms=%s",
+                expected,
+                extracted_path,
+                self._elapsed_ms(t_phase),
+            )
+            self._notify_progress(
+                progress_cb,
+                "Распаковка завершена",
+                f"Готовый путь: {extracted_path}",
+                self._elapsed_ms(t_phase),
+            )
+
+            t_phase = time.perf_counter()
+            self._notify_progress(
+                progress_cb,
+                "Обработка файла",
+                "Запуск сценария обработки (парсинг / таблица)…",
+                None,
+            )
             outcome = await self._process_prepared_source(
                 expected,
                 extracted_path,
                 file_info,
                 no_move_export_mode=no_move_export_mode,
+                progress_cb=progress_cb,
+            )
+            logger.info(
+                "yadisk flow: prepared source done expected=%s ms=%s",
+                expected,
+                self._elapsed_ms(t_phase),
+            )
+            self._notify_progress(
+                progress_cb,
+                "Обработка завершена",
+                f"Итог: {outcome.title}",
+                self._elapsed_ms(t_phase),
             )
             return WorkflowOutcome(
                 title=outcome.title,
@@ -281,11 +414,12 @@ class ProcessingService:
         file_info: SourceFileInfo,
         *,
         no_move_export_mode: str | None = None,
+        progress_cb: ProgressCallback | None = None,
     ) -> WorkflowOutcome:
         if expected == EXPECTED_NO_MOVE:
             return await self._process_no_move(prepared_path, file_info, no_move_export_mode)
         if expected == EXPECTED_24H:
-            return await self._process_24h(prepared_path, file_info)
+            return await self._process_24h(prepared_path, file_info, progress_cb=progress_cb)
         if expected == EXPECTED_WAREHOUSE_DELAY_SINGLE:
             return await self._process_warehouse_delay_single(prepared_path, file_info)
         raise WorkflowError("Неизвестный режим обработки.")
@@ -321,17 +455,27 @@ class ProcessingService:
             self.snapshot_meta_path,
         )
         right_rows = build_24h_table(snapshot, id_to_tary) if snapshot else []
-        await asyncio.to_thread(
-            update_tables,
-            self.gc,
-            self.config.spreadsheet_id,
-            self.config.worksheet_name,
-            rows,
-            right_rows,
-            meta,
-            False,
-            False,
-        )
+        try:
+            await asyncio.to_thread(
+                update_tables,
+                self.gc,
+                self.config.spreadsheet_id,
+                self.config.worksheet_name,
+                rows,
+                right_rows,
+                meta,
+                False,
+                False,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Google Sheets update failed (no_move) file=%s",
+                file_info.filename,
+            )
+            raise WorkflowError(
+                "Не удалось обновить Google Таблицу. Проверьте доступ и лимиты API; "
+                "подробности в логах сервера."
+            ) from exc
         message = (
             "Готово. Левая таблица обновлена."
             f"\nСтрок для выгрузки: {len(rows)}."
@@ -359,18 +503,90 @@ class ProcessingService:
         self,
         file_path: Path,
         file_info: SourceFileInfo,
+        *,
+        progress_cb: ProgressCallback | None = None,
     ) -> WorkflowOutcome:
+        t_phase = time.perf_counter()
+        self._notify_progress(
+            progress_cb,
+            "Парсинг 24ч",
+            f"Читаем Excel: {file_path}",
+            None,
+        )
         block_ids = await asyncio.to_thread(load_block_ids, self.block_ids_path)
         snapshot, meta = await asyncio.to_thread(process_24h_file, file_path, block_ids)
-        await asyncio.to_thread(
-            save_snapshot,
-            snapshot,
-            meta,
-            self.snapshot_path,
-            self.snapshot_meta_path,
+        logger.info(
+            "24h: process_24h_file done file=%s ms=%s",
+            file_info.filename,
+            self._elapsed_ms(t_phase),
+        )
+        self._notify_progress(
+            progress_cb,
+            "Парсинг 24ч завершён",
+            f"Строк в исходнике: {meta.rows_total}; валидных: {meta.rows_valid}.",
+            self._elapsed_ms(t_phase),
+        )
+
+        t_phase = time.perf_counter()
+        self._notify_progress(
+            progress_cb,
+            "Снимок 24ч",
+            "Сохраняем снимок на диск…",
+            None,
+        )
+        try:
+            await asyncio.to_thread(
+                save_snapshot,
+                snapshot,
+                meta,
+                self.snapshot_path,
+                self.snapshot_meta_path,
+            )
+        except Exception as exc:
+            logger.exception("save_snapshot failed file=%s", file_info.filename)
+            raise WorkflowError(
+                "Не удалось сохранить снимок выгрузки 24ч на сервере. Проверьте права на каталог data/."
+            ) from exc
+        logger.info(
+            "24h: save_snapshot done file=%s ms=%s",
+            file_info.filename,
+            self._elapsed_ms(t_phase),
+        )
+        self._notify_progress(
+            progress_cb,
+            "Снимок сохранён",
+            str(self.snapshot_path),
+            self._elapsed_ms(t_phase),
+        )
+
+        t_phase = time.perf_counter()
+        self._notify_progress(
+            progress_cb,
+            "Карта «Без движения»",
+            "Загружаем сохранённую карту ID тары…",
+            None,
         )
         id_to_tary, _ = await asyncio.to_thread(load_no_move_map, self.no_move_map_path)
+        logger.info(
+            "24h: load_no_move_map done file=%s map_size=%s ms=%s",
+            file_info.filename,
+            len(id_to_tary),
+            self._elapsed_ms(t_phase),
+        )
+        self._notify_progress(
+            progress_cb,
+            "Карта «Без движения» загружена",
+            f"Записей в карте: {len(id_to_tary)}.",
+            self._elapsed_ms(t_phase),
+        )
+
         if not id_to_tary:
+            self._notify_progress(
+                progress_cb,
+                "Нет карты no_move",
+                "Сначала выполните выгрузку «Без движения».",
+                None,
+            )
             return WorkflowOutcome(
                 title="24 часа",
                 level="warning",
@@ -382,16 +598,45 @@ class ProcessingService:
                 payload={"rows_valid": meta.rows_valid},
             )
         right_rows = build_24h_table(snapshot, id_to_tary)
-        await asyncio.to_thread(
-            update_tables,
-            self.gc,
-            self.config.spreadsheet_id,
-            self.config.worksheet_name,
-            [],
-            right_rows,
-            meta.__dict__,
-            True,
-            False,
+        t_phase = time.perf_counter()
+        self._notify_progress(
+            progress_cb,
+            "Google Таблица",
+            "Записываем правый блок (24ч)…",
+            None,
+        )
+        try:
+            await asyncio.to_thread(
+                update_tables,
+                self.gc,
+                self.config.spreadsheet_id,
+                self.config.worksheet_name,
+                [],
+                right_rows,
+                meta.__dict__,
+                True,
+                False,
+            )
+        except Exception as exc:
+            logger.exception(
+                "Google Sheets update failed (24h) file=%s",
+                file_info.filename,
+            )
+            raise WorkflowError(
+                "Не удалось обновить Google Таблицу (блок 24ч). Проверьте доступ и лимиты API; "
+                "подробности в логах сервера."
+            ) from exc
+        logger.info(
+            "24h: update_tables done file=%s right_rows=%s ms=%s",
+            file_info.filename,
+            len(right_rows),
+            self._elapsed_ms(t_phase),
+        )
+        self._notify_progress(
+            progress_cb,
+            "Google Sheets обновлён",
+            f"Выгружено строк в правый блок: {len(right_rows)}.",
+            self._elapsed_ms(t_phase),
         )
         message = (
             "Файл 24ч обновлён и загружен в таблицу."
