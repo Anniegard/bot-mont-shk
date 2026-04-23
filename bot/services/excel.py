@@ -46,7 +46,7 @@ def process_file(
 
     grouped = grouped[grouped["Стоимость"] > MIN_COST_THRESHOLD]
 
-    transfers_mask = grouped["Гофра"].str.startswith(("3", "4"))
+    transfers_mask = grouped["Гофра"].str.startswith(("3", "4", "5"))
     if export_mode == EXPORT_WITHOUT_TRANSFERS:
         grouped = grouped[~transfers_mask]
     elif export_mode == EXPORT_ONLY_TRANSFERS:
@@ -71,7 +71,7 @@ def process_file(
 
     unknown_values = (
         grouped.loc[
-            ~grouped["Гофра"].str.startswith(("3", "4", "7", "9", "10")), "Гофра"
+            ~grouped["Гофра"].str.startswith(("3", "4", "5", "7", "9", "10")), "Гофра"
         ]
         .dropna()
         .astype(str)
